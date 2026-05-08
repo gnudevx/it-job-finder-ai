@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup / shutdown events."""
     logger.info("🚀 AI Service starting up...")
+    
+    # ← Initialize MongoDB collections
+    try:
+        from services.CV.storage.metadata_service import _get_collection
+        _get_collection()  # ← Force initialization
+        logger.info("✅ MongoDB collections initialized")
+    except Exception as e:
+        logger.exception(f"❌ MongoDB initialization failed: {e}")
+    
     # TODO: khởi tạo ChromaDB client, embedding model ở đây
     yield
     logger.info("🛑 AI Service shutting down...")

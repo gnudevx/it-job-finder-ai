@@ -2,3 +2,4 @@
 .venv
 docker-compose.yml
 Dockerfile
+cv_uploads/
