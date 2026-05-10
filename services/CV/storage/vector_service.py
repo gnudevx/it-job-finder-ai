@@ -139,7 +139,7 @@ class VectorService:
         results = col.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
-            where={"$and": [{"user_id": user_id}, {"cv_id": cv_id}]},
+            where={"cv_id": {"$eq": cv_id}},
             include=["documents", "metadatas", "distances"],
         )
 
