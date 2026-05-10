@@ -18,7 +18,6 @@ redis[asyncio]==5.0.8
 chromadb==0.5.15
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
-google-generativeai==0.8.0
 groq==0.11.0
 langfuse==2.57.4
 
@@ -34,3 +33,6 @@ celery[redis]==5.4.0
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-multipart==0.0.12
 httpx==0.27.2
+
+google-genai==0.8.0
+google-api-core
