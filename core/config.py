@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
 
     # ── Token quota per user (cảnh báo khi gần hết) ───────────────────────
-    DAILY_TOKEN_LIMIT: int = 10_000
+    DAILY_TOKEN_LIMIT: int = 100_000
     TOKEN_WARNING_THRESHOLD: float = 0.9   # cảnh báo khi dùng 90%
 
     class Config:

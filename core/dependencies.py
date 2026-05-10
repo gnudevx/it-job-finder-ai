@@ -9,27 +9,26 @@ Hiện tại implement cả 2, ưu tiên header (B) vì Node.js đã verify rồ
 """
 
 import jwt
-from fastapi import Depends, HTTPException, status, Request, Cookie
+from fastapi import HTTPException, status, Request, Cookie
 from typing import Optional
 from core.config import settings
 import logging
 
+from fastapi import Header, HTTPException
+from dataclasses import dataclass
+
 logger = logging.getLogger(__name__)
 
 
+@dataclass
 class CurrentUser:
-    def __init__(self, user_id: str, role: str):
-        self.user_id = user_id
-        self.role = role
-
-    def __repr__(self):
-        return f"<User {self.user_id} role={self.role}>"
+    user_id: str
+    role: str
 
 
-def get_current_user(
-    request: Request,
-    # Nếu Node.js forward cookie thẳng
-    accessToken: Optional[str] = Cookie(default=None),
+async def get_current_user(
+    x_user_id: str | None = Header(default=None),
+    x_user_role: str = Header(default="user"),
 ) -> CurrentUser:
     """
     Dependency: inject vào bất kỳ route nào cần auth.
@@ -41,33 +40,10 @@ def get_current_user(
     # ── Ưu tiên 1: Node.js đã verify, forward headers ────────────────────
     # Node.js middleware thêm: req.headers['x-user-id'] = decoded.id
     #                          req.headers['x-user-role'] = decoded.role
-    x_user_id = request.headers.get("X-User-Id")
-    x_user_role = request.headers.get("X-User-Role", "user")
-
-    if x_user_id:
-        return CurrentUser(user_id=x_user_id, role=x_user_role)
-
-    # ── Ưu tiên 2: Tự verify cookie (dùng khi test trực tiếp) ────────────
-    token = accessToken or request.headers.get("Authorization", "").removeprefix("Bearer ")
-
-    if not token:
+    if not x_user_id:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Access token is missing",
+            status_code=401,
+            detail="Missing access token"  # ← đây là lỗi bạn đang thấy
         )
-
-    try:
-        payload = jwt.decode(
-            token,
-            settings.ACCESS_TOKEN_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-        )
-        return CurrentUser(
-            user_id=str(payload.get("id") or payload.get("sub")),
-            role=payload.get("role", "user"),
-        )
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token: {e}")
-        raise HTTPException(status_code=401, detail="Invalid token")
+    return CurrentUser(user_id=x_user_id, role=x_user_role)
+CurrentUser = CurrentUser # Để tránh lỗi circular import khi type hint CurrentUser trong services/AI/llm_service.py
