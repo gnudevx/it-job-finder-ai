@@ -27,9 +27,13 @@ class CurrentUser:
 
 
 async def get_current_user(
+    request: Request,  # thêm Request để xem tất cả headers
     x_user_id: str | None = Header(default=None),
     x_user_role: str = Header(default="user"),
 ) -> CurrentUser:
+    # Log tất cả headers để debug
+    logger.info(f"All headers: {dict(request.headers)}")
+    logger.info(f"x_user_id received: {x_user_id}")
     """
     Dependency: inject vào bất kỳ route nào cần auth.
 
