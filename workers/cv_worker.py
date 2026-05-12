@@ -38,7 +38,7 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
             extra={"event": "cv_processing_start", "cv_id": cv_id, "user_id": user_id},
         )
 
-        metadata_service.update_status(cv_id, "processing")
+        metadata_service.update_status(cv_id, "processing", user_id=user_id)
 
         # Bước 1: validate file (lần 2 — file có thể corrupt sau khi lưu)
         FileValidationService.validate_file(file_path)
@@ -78,6 +78,7 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
         metadata_service.update_status(
             cv_id=cv_id,
             status="done",
+            user_id=user_id,
             chunks_count=len(chunks),
         )
 
@@ -97,6 +98,7 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
         metadata_service.update_status(
             cv_id=cv_id,
             status="failed",
+            user_id=user_id,
             error_message=str(exc),
         )
         # Không raise self.retry → task kết thúc, không retry
@@ -109,6 +111,7 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
         metadata_service.update_status(
             cv_id=cv_id,
             status="failed",
+            user_id=user_id,
             error_message=str(exc),
         )
         # Lỗi bất ngờ → retry theo max_retries=3
