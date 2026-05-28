@@ -625,7 +625,7 @@ async def chat(message: str) -> str:
 
 ## 👤 Tác giả
 
-**gnudevx** — Backend Developer
+**gnudevx - Nguyễn Đức Dũng** — Backend Developer
 
 [![GitHub](https://img.shields.io/badge/GitHub-gnudevx-181717?style=flat-square&logo=github)](https://github.com/gnudevx)
 
