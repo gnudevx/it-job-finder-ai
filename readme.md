@@ -9,7 +9,7 @@
 ![Celery](https://img.shields.io/badge/Celery-5.4.0-37814A?style=for-the-badge&logo=celery&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
-**Hệ thống tìm kiếm việc làm IT thông minh sử dụng RAG Pipeline + Vector Search + Async Background Processing**
+**Hệ thống chat giúp ứng viên có thể đánh giá CV và phỏng vấn với chatbot về lĩnh vực IT sử dụng RAG Pipeline + Vector Search + Async Background Processing**
 
 [Xem Demo](#) · [Báo lỗi](https://github.com/gnudevx/it-job-finder-ai/issues) · [Đóng góp](#đóng-góp)
 
@@ -625,7 +625,7 @@ async def chat(message: str) -> str:
 
 ## 👤 Tác giả
 
-**gnudevx - Nguyễn Đức Dũng** — Backend Developer
+**gnudevx - Nguyễn Đức Dũng** — Backend AI Developer
 
 [![GitHub](https://img.shields.io/badge/GitHub-gnudevx-181717?style=flat-square&logo=github)](https://github.com/gnudevx)
 
