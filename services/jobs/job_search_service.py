@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _mongo_client: MongoClient | None = None
 
 # Tên DB của Node.js server (xem .env Node.js hoặc config/db.js)
-JOBS_DB_NAME = "it-job-finder"   # Sẽ fallback sang MONGODB_DB nếu không tìm thấy
+JOBS_DB_NAME = "it-job-finder"   # Sẽ fallback sang JOBS_MONGO_DB nếu không tìm thấy
 MAX_JOBS_PER_QUERY = 5
 
 
@@ -30,10 +30,10 @@ def _get_jobs_collection():
     """Lấy collection 'jobs' từ MongoDB của Node.js server."""
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = MongoClient(settings.MONGODB_URI, serverSelectionTimeoutMS=5000)
+        _mongo_client = MongoClient(settings.JOBS_MONGO_URI, serverSelectionTimeoutMS=5000)
 
     # Thử DB của Node.js server trước
-    for db_name in ["ITJOBS", JOBS_DB_NAME, settings.MONGODB_DB, "test"]:
+    for db_name in [settings.JOBS_MONGO_DB, "ITJOBS", JOBS_DB_NAME, settings.MONGODB_DB, "test"]:
         try:
             db = _mongo_client[db_name]
             # Kiểm tra collection 'jobs' có tồn tại không
@@ -44,7 +44,7 @@ def _get_jobs_collection():
             continue
 
     # Fallback: dùng DB trong config
-    return _mongo_client[settings.MONGODB_DB]["jobs"]
+    return _mongo_client[settings.JOBS_MONGO_DB]["jobs"]
 
 
 
@@ -56,6 +56,18 @@ STOPWORDS = {
     "hay", "thì", "là", "của", "trong", "nào", "gì", "với",
     "hiện", "tại", "đang", "còn", "muốn", "tìm", "hỏi",
     "về", "cho", "được", "một", "những", "các", "web", "site",
+    "công", "ty", "tnhh", "cp", "cổ", "phần", "trên", "hệ",
+    "thống", "website", "ở", "bao", "nhiêu", "ai", "đâu",
+    "job", "jobs", "việc", "làm", "tuyển", "dụng", "nào", "gì",
+    "vị", "trí"
+}
+
+# Các từ khóa thường là tiêu đề công việc, kỹ năng, không dùng để map sang tên công ty
+JOB_TITLE_KEYWORDS = {
+    "giám", "đốc", "kinh", "doanh", "nhân", "viên", "trưởng", "phòng",
+    "kỹ", "sư", "lập", "trình", "thiết", "kế", "quản", "trị", "phân", "tích",
+    "developer", "engineer", "designer", "manager", "tester", "intern", "fresher",
+    "junior", "senior", "lead", "architect", "sales", "marketing", "hr", "admin"
 }
 
 def extract_keywords(message: str) -> list[str]:
@@ -84,7 +96,9 @@ def _get_location_name(db, location_id) -> str:
     if not location_id:
         return "Không rõ địa điểm"
     try:
-        loc = db["locations"].find_one({"_id": location_id})
+        from bson import ObjectId
+        query_id = ObjectId(location_id) if isinstance(location_id, str) and ObjectId.is_valid(location_id) else location_id
+        loc = db["locations"].find_one({"_id": query_id})
         if loc:
             return loc.get("name", "Không rõ địa điểm")
     except Exception:
@@ -96,9 +110,13 @@ def _get_company_name(db, employer_id) -> str:
     if not employer_id:
         return "IT Job Finder Partner"
     try:
-        employer = db["employer"].find_one({"_id": employer_id})
+        from bson import ObjectId
+        query_emp_id = ObjectId(employer_id) if isinstance(employer_id, str) and ObjectId.is_valid(employer_id) else employer_id
+        employer = db["employer"].find_one({"_id": query_emp_id})
         if employer and "companyId" in employer:
-            company = db["COMPANY"].find_one({"_id": employer["companyId"]})
+            company_id = employer["companyId"]
+            query_comp_id = ObjectId(company_id) if isinstance(company_id, str) and ObjectId.is_valid(company_id) else company_id
+            company = db["COMPANY"].find_one({"_id": query_comp_id})
             if company:
                 return company.get("name", "IT Job Finder Partner")
     except Exception:
@@ -106,42 +124,46 @@ def _get_company_name(db, employer_id) -> str:
     return "IT Job Finder Partner"
 
 
-def _build_search_query(keywords: list[str], location_ids: list = []) -> dict:
+def _build_search_query(keywords: list[str], location_ids: list = [], employer_ids: list = [], matched_company_keywords: list = [], matched_location_keywords: list = []) -> dict:
     """
     Xây dựng MongoDB query an toàn (không nhận raw query từ user).
     Chỉ tìm trong các fields: title, mustHaveSkills, optionalSkills, specialization, experience, level.
     Luôn filter: publishStatus="approved" AND visibility="visible".
     """
-    if not keywords:
-        # Không có keyword → lấy jobs mới nhất
-        return {
-            "publishStatus": "approved",
-            "visibility": "visible",
-        }
-
-    # Tạo regex pattern từ keywords (case-insensitive)
-    keyword_patterns = [{"$regex": kw, "$options": "i"} for kw in keywords]
-
-    # Mỗi keyword OR với nhau trên nhiều fields
-    or_conditions = []
-    for pattern in keyword_patterns:
-        or_conditions.extend([
-            {"title": pattern},
-            {"mustHaveSkills": pattern},
-            {"optionalSkills": pattern},
-            {"specialization": pattern},
-            {"experience": pattern},
-            {"level": pattern},
-        ])
-
-    if location_ids:
-        or_conditions.append({"location": {"$in": location_ids}})
-
-    return {
+    query = {
         "publishStatus": "approved",
         "visibility": "visible",
-        "$or": or_conditions,
     }
+
+    # Lọc các keywords không phải tên công ty hoặc địa điểm để tìm kiếm theo title/skills
+    job_keywords = [kw for kw in keywords if kw not in matched_company_keywords and kw not in matched_location_keywords]
+
+    # 1. Điều kiện về công ty (nếu có)
+    if employer_ids:
+        query["employer_id"] = {"$in": employer_ids}
+
+    # 2. Điều kiện về địa điểm (nếu có)
+    if location_ids:
+        query["location"] = {"$in": location_ids}
+
+    # 3. Điều kiện về kỹ năng / title (nếu có job_keywords)
+    if job_keywords:
+        and_conditions = []
+        for kw in job_keywords:
+            pattern = {"$regex": kw, "$options": "i"}
+            and_conditions.append({
+                "$or": [
+                    {"title": pattern},
+                    {"mustHaveSkills": pattern},
+                    {"optionalSkills": pattern},
+                    {"specialization": pattern},
+                    {"experience": pattern},
+                    {"level": pattern},
+                ]
+            })
+        query["$and"] = and_conditions
+
+    return query
 
 
 # ── Formatter ─────────────────────────────────────────────────────────────────
@@ -188,23 +210,36 @@ def _safe_job_fields(job: dict, db) -> dict:
     }
 
 
-def format_jobs_for_llm(jobs: list[dict], is_suggestion: bool = False) -> str:
+def format_jobs_for_llm(jobs: list[dict], is_suggestion: bool = False, total_count: int = 0, matched_count: int = 0) -> str:
     """
     Format list jobs thành context text để đưa vào system prompt cho LLM.
-    Mỗi job được trình bày rõ ràng, dễ đọc.
+    Đồng thời hiển thị thống kê tổng số jobs và số jobs khớp.
     """
+    lines = []
+    lines.append("Thống kê hệ thống:")
+    lines.append(f"  - Tổng số công việc đang hoạt động trên hệ thống: {total_count}")
+    
+    if not is_suggestion:
+        lines.append(f"  - Số công việc khớp với yêu cầu tìm kiếm: {matched_count}")
+        
     if not jobs:
-        return ""
+        if is_suggestion:
+            lines.append("\nHiện tại không có công việc nào trên hệ thống.")
+        else:
+            lines.append("\nKhông tìm thấy công việc nào khớp với từ khóa tìm kiếm của bạn.")
+        return "\n".join(lines)
 
     if is_suggestion:
-        lines = [f"Không tìm thấy job khớp chính xác với yêu cầu của bạn. Dưới đây là {len(jobs)} vị trí nổi bật hiện có trên hệ thống để bạn tham khảo:\n"]
+        lines.append(f"\nDưới đây là {len(jobs)} công việc mới nhất hiện có để bạn tham khảo:\n")
     else:
-        lines = [f"Tìm thấy {len(jobs)} vị trí phù hợp:\n"]
+        lines.append(f"\nDưới đây là {len(jobs)} công việc phù hợp nhất trong số các công việc tìm thấy:\n")
+        
     for i, job in enumerate(jobs, 1):
         skills_str = ", ".join(job["must_have_skills"]) if job["must_have_skills"] else "Không ghi cụ thể"
         lines.append(
             f"[Job {i}]\n"
             f"  Vị trí: {job['title']}\n"
+            f"  Công ty: {job['company']}\n"
             f"  Địa điểm: {job['province']}\n"
             f"  Lương: {job['salary']}\n"
             f"  Kinh nghiệm: {job['experience']}\n"
@@ -232,17 +267,54 @@ def search_jobs_from_message(message: str) -> list[dict]:
         collection = _get_jobs_collection()
         db = collection.database
 
-        # Tìm location matches dựa trên keywords
+        # 1. Xác định địa điểm phù hợp từ message (sử dụng $expr index query để tìm tên địa điểm là substring của message)
         location_ids = []
-        if keywords:
-            loc_queries = [{"name": {"$regex": kw, "$options": "i"}} for kw in keywords]
-            try:
-                matched_locs = list(db["locations"].find({"$or": loc_queries}, {"_id": 1}))
-                location_ids = [loc["_id"] for loc in matched_locs]
-            except Exception as e:
-                logger.warning(f"Error fetching location matching keywords: {e}")
+        matched_location_keywords = []
+        try:
+            locs = list(db["locations"].find({
+                "$expr": {
+                    "$gte": [
+                        { "$indexOfCP": [ message.lower(), { "$toLower": "$name" } ] },
+                        0
+                    ]
+                }
+            }, {"_id": 1, "name": 1}))
+            if locs:
+                location_ids = [loc["_id"] for loc in locs]
+                # Xác định keyword nào thuộc địa điểm đã khớp
+                for l in locs:
+                    for kw in keywords:
+                        if kw.lower() in l["name"].lower() and kw not in matched_location_keywords:
+                            matched_location_keywords.append(kw)
+        except Exception as e:
+            logger.warning(f"Error fetching locations: {e}")
 
-        query = _build_search_query(keywords, location_ids)
+        # 2. Xác định công ty phù hợp từ keywords (bỏ qua các từ khóa là job title)
+        employer_ids = []
+        matched_company_keywords = []
+        if keywords:
+            for kw in keywords:
+                if kw.lower() in JOB_TITLE_KEYWORDS:
+                    continue
+                companies = list(db["COMPANY"].find({"name": {"$regex": kw, "$options": "i"}}, {"_id": 1}))
+                if companies:
+                    matched_company_keywords.append(kw)
+                    company_ids = [c["_id"] for c in companies]
+                    company_ids_all = company_ids + [str(cid) for cid in company_ids]
+                    employers = list(db["employer"].find({"companyId": {"$in": company_ids_all}}, {"_id": 1}))
+                    if employers:
+                        for emp in employers:
+                            employer_ids.append(emp["_id"])
+                            employer_ids.append(str(emp["_id"]))
+
+        # 3. Tạo query
+        query = _build_search_query(
+            keywords=keywords,
+            location_ids=location_ids,
+            employer_ids=employer_ids,
+            matched_company_keywords=matched_company_keywords,
+            matched_location_keywords=matched_location_keywords
+        )
 
         raw_jobs = list(
             collection.find(query)
@@ -265,6 +337,77 @@ def search_jobs_from_message(message: str) -> list[dict]:
     except Exception as e:
         logger.exception(f"Job search failed: {e}")
         return []
+
+
+def count_jobs_from_message(message: str) -> int:
+    """
+    Đếm số lượng job phù hợp với tin nhắn của user.
+    """
+    try:
+        collection = _get_jobs_collection()
+        db = collection.database
+
+        # Nếu tin nhắn rỗng, đếm tất cả jobs đang hoạt động
+        if not message.strip():
+            return collection.count_documents({
+                "publishStatus": "approved",
+                "visibility": "visible"
+            })
+
+        keywords = extract_keywords(message)
+
+        # 1. Xác định địa điểm phù hợp từ message
+        location_ids = []
+        matched_location_keywords = []
+        try:
+            locs = list(db["locations"].find({
+                "$expr": {
+                    "$gte": [
+                        { "$indexOfCP": [ message.lower(), { "$toLower": "$name" } ] },
+                        0
+                    ]
+                }
+            }, {"_id": 1, "name": 1}))
+            if locs:
+                location_ids = [loc["_id"] for loc in locs]
+                for l in locs:
+                    for kw in keywords:
+                        if kw.lower() in l["name"].lower() and kw not in matched_location_keywords:
+                            matched_location_keywords.append(kw)
+        except Exception as e:
+            logger.warning(f"Error counting locations: {e}")
+
+        # 2. Xác định công ty phù hợp từ keywords
+        employer_ids = []
+        matched_company_keywords = []
+        if keywords:
+            for kw in keywords:
+                if kw.lower() in JOB_TITLE_KEYWORDS:
+                    continue
+                companies = list(db["COMPANY"].find({"name": {"$regex": kw, "$options": "i"}}, {"_id": 1}))
+                if companies:
+                    matched_company_keywords.append(kw)
+                    company_ids = [c["_id"] for c in companies]
+                    company_ids_all = company_ids + [str(cid) for cid in company_ids]
+                    employers = list(db["employer"].find({"companyId": {"$in": company_ids_all}}, {"_id": 1}))
+                    if employers:
+                        for emp in employers:
+                            employer_ids.append(emp["_id"])
+                            employer_ids.append(str(emp["_id"]))
+
+        query = _build_search_query(
+            keywords=keywords,
+            location_ids=location_ids,
+            employer_ids=employer_ids,
+            matched_company_keywords=matched_company_keywords,
+            matched_location_keywords=matched_location_keywords
+        )
+
+        return collection.count_documents(query)
+
+    except Exception as e:
+        logger.exception(f"Count jobs failed: {e}")
+        return 0
 
 
 

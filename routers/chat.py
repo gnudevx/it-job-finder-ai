@@ -84,6 +84,7 @@ async def chat(
         try:
             from services.jobs.job_search_service import (
                 search_jobs_from_message,
+                count_jobs_from_message,
                 format_jobs_for_llm,
                 build_faq_messages,
                 get_active_job_suggestions,
@@ -96,7 +97,15 @@ async def chat(
                 job_results = get_active_job_suggestions(col.database)
                 is_suggestion = True
 
-            job_context = format_jobs_for_llm(job_results, is_suggestion=is_suggestion)
+            total_active = count_jobs_from_message("")
+            matched_active = count_jobs_from_message(body.message) if not is_suggestion else total_active
+
+            job_context = format_jobs_for_llm(
+                job_results,
+                is_suggestion=is_suggestion,
+                total_count=total_active,
+                matched_count=matched_active
+            )
             messages = build_faq_messages(body.session_id, body.message, job_context)
             
             # Hybrid: load thêm CV context để AI trả lời có cá nhân hóa dựa trên CV
@@ -122,11 +131,17 @@ async def chat(
                 cv_id=cv_id,
             )
             
-            # Hybrid: Nếu trong câu hỏi có đề cập tìm job/vị trí cụ thể, lấy thêm job_context từ MongoDB
-            from services.jobs.job_search_service import search_jobs_from_message, format_jobs_for_llm
+            from services.jobs.job_search_service import search_jobs_from_message, count_jobs_from_message, format_jobs_for_llm
             job_results = search_jobs_from_message(body.message)
             if job_results:
-                job_context = format_jobs_for_llm(job_results)
+                total_active = count_jobs_from_message("")
+                matched_active = count_jobs_from_message(body.message)
+                job_context = format_jobs_for_llm(
+                    job_results,
+                    is_suggestion=False,
+                    total_count=total_active,
+                    matched_count=matched_active
+                )
                 logger.info(
                     "Hybrid mode (CV/Interview + Job): loaded job context",
                     extra={"event": "hybrid_job_load", "jobs_found": len(job_results)},

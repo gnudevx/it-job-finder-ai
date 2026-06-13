@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     MONGODB_URI: str = "mongodb://mongo:27017"
     MONGODB_DB: str = "cv_chatbot"
 
+    # MongoDB chứa jobs thực tế (lấy từ Node.js server)
+    JOBS_MONGO_URI: str = "mongodb://mongo:27017"
+    JOBS_MONGO_DB: str = "ITJOBS"
+
     # ── Redis ─────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://redis:6379/0"
 

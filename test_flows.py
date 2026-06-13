@@ -94,33 +94,41 @@ def test_keyword_extraction():
 # ── Test 3: Job Search (cần MongoDB) ─────────────────────────────────────────
 
 def test_job_search():
-    print("\n[TEST 3] Job Search — MongoDB (cần MongoDB đang chạy)")
+    print("\n[TEST 3] Job Search — MongoDB (kết nối database thực tế)")
     print("-" * 40)
 
     try:
         from services.jobs.job_search_service import (
             search_jobs_from_message,
+            count_jobs_from_message,
             format_jobs_for_llm,
             get_active_job_suggestions,
             _get_jobs_collection,
         )
 
-        # Test với keyword phổ biến
+        # 1. Đếm tổng số job đang hoạt động
+        total_count = count_jobs_from_message("")
+        print(f"  [COUNT] Tổng số job đang hoạt động trên hệ thống: {total_count}")
+
+        # 2. Test các câu hỏi cụ thể của người dùng
         test_queries = [
-            "Có job React Developer không?",
-            "Tìm job Backend Python",
-            "Job nào dành cho Fresher?",
+            "trên hệ thống có bao nhiêu job",
+            "có job nào là vị trí giám đốc kinh doanh không",
+            "công ty TNHH ABC còn tuyển Giám đốc kinh doanh không",
+            "Tìm job React Developer",
         ]
 
         for query in test_queries:
+            matched_count = count_jobs_from_message(query)
             jobs = search_jobs_from_message(query)
-            context = format_jobs_for_llm(jobs)
+            context = format_jobs_for_llm(jobs, is_suggestion=False, total_count=total_count, matched_count=matched_count)
             print(f"  Query: \"{query}\"")
-            print(f"  Found: {len(jobs)} jobs")
-            if jobs:
-                print(f"  First job: {jobs[0]['title']} — {jobs[0]['province']}")
+            print(f"  Matched count (đếm được): {matched_count}")
+            print(f"  Found jobs: {len(jobs)} jobs")
+            for j in jobs:
+                print(f"    - Title: {j['title']} | Company: {j['company']} | Location: {j['province']} | Link: /jobs/{j['id']}")
             if context:
-                print(f"  Context preview: {context[:100]}...")
+                print(f"  Context generated for LLM:\n{context[:300]}\n...")
             print()
 
         # Test active job suggestions
@@ -131,19 +139,18 @@ def test_job_search():
             print(f"  Found {len(suggestions)} suggestions")
             if suggestions:
                 print(f"  First suggestion: {suggestions[0]['title']}")
-                context_sugg = format_jobs_for_llm(suggestions, is_suggestion=True)
+                context_sugg = format_jobs_for_llm(suggestions, is_suggestion=True, total_count=total_count, matched_count=total_count)
                 print(f"  Suggestions context preview:\n{context_sugg[:200]}...")
         except Exception as ex:
             print(f"  ⚠️ Suggestions test failed: {ex}")
         print()
 
-        print("  ✅ Job search OK (dù không có kết quả vẫn pass — DB có thể trống)")
+        print("  ✅ Job search OK")
         return True
 
     except Exception as e:
-        print(f"  ⚠️  Job search skipped: {e}")
-        print("  (Chạy MongoDB local hoặc Docker trước)")
-        return True  # không fail test vì MongoDB optional ở đây
+        print(f"  ⚠️  Job search failed: {e}")
+        return False
 
 
 # ── Test 4: LLM FAQ Mode (cần GEMINI_API_KEY) ────────────────────────────────
