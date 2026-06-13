@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from pymongo import MongoClient, DESCENDING
 from core.config import settings
-
+from typing import Any
 logger = logging.getLogger(__name__)
 
 # ── Singleton client ──────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ def _build_search_query(keywords: list[str], location_ids: list = [], employer_i
     Chỉ tìm trong các fields: title, mustHaveSkills, optionalSkills, specialization, experience, level.
     Luôn filter: publishStatus="approved" AND visibility="visible".
     """
-    query = {
+    query: dict[str, Any] = {
         "publishStatus": "approved",
         "visibility": "visible",
     }
