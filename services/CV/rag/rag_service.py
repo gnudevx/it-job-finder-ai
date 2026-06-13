@@ -73,6 +73,47 @@ def clear_history(session_id: str) -> None:
 def _is_general_cv_question(message: str) -> bool:
     msg_lower = message.lower()
     return any(kw in msg_lower for kw in GENERAL_CV_QUESTIONS)
+def retrieve_cv_context(user_message: str, user_id: str, cv_id: str | None = None) -> str:
+    """Lấy CV context tương tự từ ChromaDB dựa trên câu hỏi của user."""
+    if not cv_id:
+        return ""
+    try:
+        embedding_service = EmbeddingService()
+        query_vector = embedding_service.embed_query(user_message)
+
+        vector_service = VectorService()
+        if _is_general_cv_question(user_message):
+            top_k = 8   # lấy gần hết CV
+        else:
+            top_k = 2 
+        chunks = vector_service.query_similar_chunks(
+            query_embedding=query_vector,
+            user_id=user_id,
+            cv_id=cv_id,
+            top_k=top_k,
+        )
+        if chunks:
+            context_parts = [f"[Đoạn {i+1}]: {c['text']}" for i, c in enumerate(chunks)]
+            cv_context = "\n\n".join(context_parts)
+            logger.info(
+                "RAG chunks retrieved",
+                extra={
+                    "event": "rag_retrieved",
+                    "cv_id": cv_id,
+                    "chunks": len(chunks),
+                    "top_score": chunks[0]["score"] if chunks else 0,
+                },
+            )
+            return cv_context
+    except Exception as e:
+        import traceback
+        logger.error(
+            "RAG retrieval failed FULL ERROR: " + traceback.format_exc(),
+            extra={"event": "rag_failed", "error": str(e)},
+        )
+    return ""
+
+
 def build_rag_messages(
     user_message: str,
     session_id: str,
@@ -81,77 +122,17 @@ def build_rag_messages(
 ) -> tuple[list[dict], str]:
     """
     Tạo list messages đầy đủ để gửi LLM:
-      [CV context (nếu có)] + [history] + [user message hiện tại]
-
-    Args:
-        user_message: tin nhắn người dùng vừa gửi
-        session_id: ID phiên chat
-        user_id: để filter vector search
-        cv_id: nếu None → không search CV (user chưa upload)
-
-    Returns:
-        list[dict] format [{"role": "user"/"assistant", "content": "..."}]
+      [history] + [user message hiện tại]
+      CV context được trả về riêng để inject vào System Prompt.
     """
-    messages = []
+    cv_context = retrieve_cv_context(user_message, user_id, cv_id)
 
-    # 1. Lấy CV context từ ChromaDB (nếu có cv_id)
-    cv_context = ""
-    if cv_id:
-        try:
-            embedding_service = EmbeddingService()
-            query_vector = embedding_service.embed_query(user_message)
-
-            vector_service = VectorService()
-            if _is_general_cv_question(user_message):
-                top_k = 8   # lấy gần hết CV
-            else:
-                top_k = 2 
-            chunks = vector_service.query_similar_chunks(
-                query_embedding=query_vector,
-                user_id=user_id,
-                cv_id=cv_id,
-                top_k = top_k,
-            )
-            if chunks:
-                # Ghép các chunks thành 1 đoạn context
-                context_parts = [f"[Đoạn {i+1}]: {c['text']}" for i, c in enumerate(chunks)]
-                cv_context = "\n\n".join(context_parts)
-
-                logger.info(
-                    "RAG chunks retrieved",
-                    extra={
-                        "event": "rag_retrieved",
-                        "cv_id": cv_id,
-                        "chunks": len(chunks),
-                        "top_score": chunks[0]["score"] if chunks else 0,
-                    },
-                )
-        except Exception as e:
-            import traceback
-            logger.error(
-                "RAG retrieval failed FULL ERROR: " + traceback.format_exc(),
-                extra={"event": "rag_failed", "error": str(e)},
-            )
-
-    # 2. Nếu có CV context → thêm vào tin nhắn đầu tiên dạng system-like
-    if cv_context:
-        messages.append({
-            "role": "user",
-            "content": f"[THÔNG TIN CV CỦA TÔI]\n{cv_context}\n[END CV]",
-        })
-        messages.append({
-            "role": "assistant",
-            "content": "Tôi đã đọc CV của bạn. Bạn muốn hỏi gì?",
-        })
-
-    # 3. Lấy lịch sử chat
+    # Lấy lịch sử chat
     history = get_history(session_id, limit=6)
     messages = history + [{"role": "user", "content": user_message}]
 
-    # 4. Thêm tin nhắn mới của user
-    messages.append({"role": "user", "content": user_message})
-
     return messages, cv_context
+
 
 
 # ── Active CV lookup ──────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ from services.CV.rag.rag_service import (
     get_active_cv_id,
 )
 from services.AI.llm_service import chat_completion, get_token_usage
+from services.AI.intent_service import detect_intent, did_context_switch
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,11 +33,14 @@ async def chat(
 ):
     """
     Luồng:
-    1. Tìm cv_id mới nhất của user (nếu client không gửi lên)
-    2. RAG: embed câu hỏi → tìm chunks CV liên quan → lấy history
-    3. Gọi Gemini với context đầy đủ
-    4. Lưu cả 2 tin nhắn (user + assistant) vào MongoDB
-    5. Trả về reply + token info
+    1. Intent detection: phát hiện ý định thực sự của tin nhắn (có thể khác mode)
+    2. Route theo intent:
+       - faq          → tìm job từ MongoDB, không dùng RAG CV
+       - cv_advisor   → RAG từ ChromaDB
+       - mock_interview → RAG từ ChromaDB
+    3. Gọi LLM với context phù hợp
+    4. Lưu cả 2 tin nhắn vào MongoDB
+    5. Trả về reply + detected_intent (để FE biết context switch)
     """
     logger.info("Chat request", extra={
         "event": "chat_request",
@@ -49,45 +53,115 @@ async def chat(
     cv_id = body.cv_id or get_active_cv_id(user.user_id)
 
     if not cv_id and body.mode in ("cv_advisor", "mock_interview"):
-        # Vẫn cho chat nhưng không có CV context
         logger.info("No CV found for user", extra={"user_id": user.user_id})
 
-    # 2. Build messages với RAG context + history
+    # ── Intent Detection ─────────────────────────────────────────────────────
+    # Phát hiện ý định thực sự của tin nhắn (bidirectional — không bị lock theo mode)
     try:
-        messages, cv_context  = build_rag_messages(
-            user_message=body.message,
-            session_id=body.session_id,
-            user_id=user.user_id,
-            cv_id=cv_id,
-        )
+        detected_intent = detect_intent(body.message, body.mode)
+        switched = did_context_switch(detected_intent, body.mode)
+        if switched:
+            logger.info(
+                "Context switch detected",
+                extra={
+                    "event": "context_switch",
+                    "from": body.mode,
+                    "to": detected_intent,
+                    "user_id": user.user_id,
+                },
+            )
     except Exception as e:
-        logger.exception("RAG failed", extra={"user_id": user.user_id})
-        raise HTTPException(status_code=500, detail="Lỗi khi lấy context CV")
+        logger.warning(f"Intent detection failed, using original mode: {e}")
+        detected_intent = body.mode
 
-    # 3. Gọi Gemini
+    # ── Route theo detected_intent ────────────────────────────────────────────
+    messages: list[dict] = []
+    cv_context = ""
+    job_context = ""
+
+    if detected_intent == "faq":
+        # FAQ mode: tìm job từ DB, có thể kết hợp CV context nếu có
+        try:
+            from services.jobs.job_search_service import (
+                search_jobs_from_message,
+                format_jobs_for_llm,
+                build_faq_messages,
+                get_active_job_suggestions,
+                _get_jobs_collection,
+            )
+            job_results = search_jobs_from_message(body.message)
+            is_suggestion = False
+            if not job_results:
+                col = _get_jobs_collection()
+                job_results = get_active_job_suggestions(col.database)
+                is_suggestion = True
+
+            job_context = format_jobs_for_llm(job_results, is_suggestion=is_suggestion)
+            messages = build_faq_messages(body.session_id, body.message, job_context)
+            
+            # Hybrid: load thêm CV context để AI trả lời có cá nhân hóa dựa trên CV
+            if cv_id:
+                from services.CV.rag.rag_service import retrieve_cv_context
+                cv_context = retrieve_cv_context(body.message, user.user_id, cv_id)
+                
+            logger.info(
+                "FAQ mode: job search done",
+                extra={"event": "faq_search", "jobs_found": len(job_results), "has_cv": bool(cv_context)},
+            )
+        except Exception as e:
+            logger.exception("Job search failed in FAQ mode", extra={"user_id": user.user_id})
+            # Graceful fallback: vẫn gọi LLM nhưng không có job data
+            messages = [{"role": "user", "content": body.message}]
+    else:
+        # CV / Interview mode: RAG từ ChromaDB
+        try:
+            messages, cv_context = build_rag_messages(
+                user_message=body.message,
+                session_id=body.session_id,
+                user_id=user.user_id,
+                cv_id=cv_id,
+            )
+            
+            # Hybrid: Nếu trong câu hỏi có đề cập tìm job/vị trí cụ thể, lấy thêm job_context từ MongoDB
+            from services.jobs.job_search_service import search_jobs_from_message, format_jobs_for_llm
+            job_results = search_jobs_from_message(body.message)
+            if job_results:
+                job_context = format_jobs_for_llm(job_results)
+                logger.info(
+                    "Hybrid mode (CV/Interview + Job): loaded job context",
+                    extra={"event": "hybrid_job_load", "jobs_found": len(job_results)},
+                )
+        except Exception as e:
+            logger.exception("RAG / Hybrid load failed", extra={"user_id": user.user_id})
+            raise HTTPException(status_code=500, detail="Lỗi khi lấy dữ liệu CV/Job")
+
+
+    # ── Gọi LLM ──────────────────────────────────────────────────────────────
     try:
         result = chat_completion(
             messages=messages,
             user_id=user.user_id,
-            mode=body.mode,
+            mode=detected_intent,           # dùng intent thực tế, không phải body.mode
             job_position=body.job_position,
             cv_context=cv_context,
+            job_context=job_context,
         )
     except Exception as e:
         logger.exception("LLM failed", extra={"user_id": user.user_id})
         raise HTTPException(status_code=502, detail="Lỗi khi gọi AI model")
 
-    # 4. Lưu lịch sử vào MongoDB
+    # ── Lưu lịch sử vào MongoDB ───────────────────────────────────────────────
     save_message(body.session_id, user.user_id, "user", body.message)
     save_message(body.session_id, user.user_id, "assistant", result["reply"])
 
-    # 5. Trả về
+    # ── Trả về ───────────────────────────────────────────────────────────────
     return ChatResponse(
         reply=result["reply"],
         session_id=body.session_id,
         tokens_used=result["tokens_used"],
         tokens_remaining=result["tokens_remaining"],
         warning=result.get("warning"),
+        detected_intent=detected_intent,    # FE dùng để hiện thông báo context switch
     )
 
 

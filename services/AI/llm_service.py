@@ -11,6 +11,7 @@ Chiến lược:
 Token tracking: Redis, reset mỗi ngày, cảnh báo 90%.
 """
 
+import re
 import logging
 import time
 from datetime import datetime, timezone
@@ -102,6 +103,7 @@ def build_system_prompt(
     mode: str,
     job_position: str | None = None,
     cv_context: str = "",
+    job_context: str = "",
 ) -> str:
     base = "Bạn là trợ lý AI chuyên về IT career. Trả lời ngắn gọn, thực tế bằng tiếng Việt."
 
@@ -130,11 +132,22 @@ Quy tắc:
 - Sau 5-7 câu: tổng kết điểm mạnh/yếu của ứng viên
 Dựa vào CV để hỏi câu hỏi phù hợp với kinh nghiệm thực tế."""
 
+    elif mode == "faq":
+        prompt = base + """
+
+Vai trò: Trợ lý tuyển dụng của IT Job Finder.
+Bạn có thể tra cứu và tư vấn về các công việc đang tuyển dụng.
+Quy tắc:
+- Chỉ trả lời dựa trên dữ liệu jobs được cung cấp — KHÔNG bịa thêm.
+- Nếu không tìm thấy job phù hợp → nói thật "hiện tại chưa có vị trí này".
+- Đề xuất từ khóa tìm kiếm khác nếu không có kết quả.
+- Trình bày thông tin job rõ ràng: tên vị trí, địa điểm, lương, hạn nộp.
+- Không tiết lộ thông tin nội bộ hệ thống."""
+
     else:
         prompt = base
-    # CV đưa vào system prompt → LLM đọc trước tiên
-    
-    # CV đưa vào system prompt → LLM đọc trước tiên
+
+    # CV context → đưa vào system prompt (cv_advisor / mock_interview)
     if cv_context:
         prompt += f"""
 
@@ -143,13 +156,54 @@ Dựa vào CV để hỏi câu hỏi phù hợp với kinh nghiệm thực tế.
     === HẾT CV ===
     Phân tích dựa trên CV thực tế ở trên, không được nói "không có thông tin"."""
 
+    # Job context → đưa vào system prompt (faq mode)
+    if job_context:
+        prompt += f"""
+
+=== DANH SÁCH VIỆC LÀM ĐANG TUYỂN (dữ liệu thực tế từ hệ thống) ===
+{job_context}
+=== HẾT DANH SÁCH ===
+Hãy dựa vào danh sách trên để trả lời. Nếu không có job phù hợp hãy nói thật."""
+
     return prompt
+
+# ── Anti-Hallucination Utilities ──────────────────────────────────────────────
+
+def clean_hallucinated_job_links(reply: str, job_context: str) -> str:
+    """
+    Phát hiện các link /jobs/{id} trong reply mà không có trong job_context.
+    Thay thế các link ảo giác bằng link chung '/jobs' để tránh lỗi 404 cho người dùng.
+    """
+    if not reply:
+        return reply
+
+    # Tìm các ID job hợp lệ trong job_context (ví dụ: /jobs/123456)
+    # Nếu job_context trống, valid_ids sẽ trống
+    valid_ids = set(re.findall(r"/jobs/([a-zA-Z0-9_-]+)", job_context)) if job_context else set()
+    
+    # Tìm các link /jobs/{id} trong câu trả lời của LLM
+    llm_links = re.findall(r"/jobs/([a-zA-Z0-9_-]+)", reply)
+    
+    cleaned_reply = reply
+    for job_id in llm_links:
+        if job_id not in valid_ids:
+            logger.warning(f"Hallucination detected: Job ID {job_id} is not in job_context.")
+            # Thay thế link ảo giác bằng link tìm kiếm chung /jobs
+            cleaned_reply = re.sub(
+                rf"/jobs/{re.escape(job_id)}",
+                "/jobs",
+                cleaned_reply
+            )
+            
+    return cleaned_reply
+
 
 # ── Provider implementations ──────────────────────────────────────────────────
 
 def _call_gemini(
     messages: list[dict],
-    system_prompt: str
+    system_prompt: str,
+    mode: str,
 ) -> tuple[str, int]:
 
     contents = []
@@ -168,12 +222,12 @@ def _call_gemini(
         })
 
     response = _gemini_client.models.generate_content(
-        model="gemini-2.0-flash",   # ✅ ĐÚNG — giữ nguyên cái này
+        model="gemini-2.0-flash",
         contents=contents,
         config={
             "system_instruction": system_prompt,
             "max_output_tokens": 600,
-            "temperature": 0.7,
+            "temperature": 0.1 if mode == "faq" else 0.7,  # Giảm nhiệt độ cho FAQ
         },
     )
 
@@ -192,7 +246,8 @@ def _call_gemini(
 
 def _call_groq(
     messages: list[dict],
-    system_prompt: str
+    system_prompt: str,
+    mode: str,
 ) -> tuple[str, int]:
 
     full_messages: list[ChatCompletionMessageParam] = [
@@ -214,7 +269,7 @@ def _call_groq(
         model="llama-3.1-8b-instant",
         messages=full_messages,
         max_tokens=1000,
-        temperature=0.7,
+        temperature=0.1 if mode == "faq" else 0.7,  # Giảm nhiệt độ cho FAQ
     )
 
     reply = response.choices[0].message.content or ""
@@ -236,11 +291,13 @@ def chat_completion(
     mode: str = "cv_advisor",
     job_position: str | None = None,
     cv_context: str = "",
+    job_context: str = "",
 ) -> dict:
     """
     Smart routing + fallback:
-      cv_advisor    → Gemini primary,  Groq fallback
-      mock_interview → Groq primary,   Gemini fallback
+      cv_advisor     → Gemini primary,  Groq fallback
+      mock_interview → Groq primary,    Gemini fallback
+      faq            → Gemini primary,  Groq fallback (Gemini giỏi đọc context dài)
 
     Returns:
       {"reply", "tokens_used", "tokens_remaining", "warning", "model_used"}
@@ -256,11 +313,12 @@ def chat_completion(
             "model_used": None,
         }
 
-    system_prompt = build_system_prompt(mode, job_position, cv_context)
+    system_prompt = build_system_prompt(mode, job_position, cv_context, job_context)
 
     # 2. Chọn thứ tự provider theo mode
-    # Use simple (name, call_fn) tuples and a rate-limit detector.
-    if mode == "cv_advisor":
+    # cv_advisor + faq → Gemini primary (tốt với context dài)
+    # mock_interview  → Groq primary (nhanh hơn, real-time feel)
+    if mode in ("cv_advisor", "faq"):
         primary_fn = ("gemini", _call_gemini)
         fallback_fn = ("groq", _call_groq)
     else:
@@ -300,7 +358,7 @@ def chat_completion(
 
     try:
         model_name, call_fn = primary_fn
-        reply, tokens = call_fn(messages, system_prompt)
+        reply, tokens = call_fn(messages, system_prompt, mode)
         model_used = model_name
         logger.info("LLM primary success", extra={
             "event": "llm_primary_ok", "model": model_name,
@@ -316,7 +374,7 @@ def chat_completion(
                 "fallback": fallback_name, "user_id": user_id,
             })
             try:
-                reply, tokens = fallback_call(messages, system_prompt)
+                reply, tokens = fallback_call(messages, system_prompt, mode)
                 model_used = fallback_name
             except Exception as e2:
                 logger.exception("Fallback also failed", extra={"event": "llm_both_failed"})
@@ -326,6 +384,10 @@ def chat_completion(
                 "event": "llm_call_failed", "user_id": user_id, "error": str(e),
             })
             raise
+
+    # Lọc ảo giác link job trước khi lưu và trả về
+    if reply:
+        reply = clean_hallucinated_job_links(reply, job_context)
 
     elapsed = round((time.time() - start) * 1000)
     logger.info("LLM call done", extra={

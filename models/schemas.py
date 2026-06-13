@@ -15,7 +15,7 @@ from datetime import datetime
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     session_id: str = Field(..., description="UUID phiên chat — client tự tạo và giữ")
-    mode: Literal["cv_advisor", "mock_interview"] = "cv_advisor"
+    mode: Literal["cv_advisor", "mock_interview", "faq"] = "cv_advisor"
     cv_id: Optional[str] = Field(
         default=None,
         description="ID của CV đã upload. Nếu None → tự dùng CV mới nhất",
@@ -32,6 +32,7 @@ class ChatResponse(BaseModel):
     tokens_used: int
     tokens_remaining: int
     warning: Optional[str] = None
+    detected_intent: Optional[str] = None  # intent thực tế sau khi detect (để FE biết có context switch không)
 
 
 # ── CV Upload ─────────────────────────────────────────────────────────────────
