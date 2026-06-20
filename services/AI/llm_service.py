@@ -71,7 +71,11 @@ def get_token_usage(user_id: str) -> dict:
         "used": used,
         "limit": DAILY_TOKEN_LIMIT,
         "remaining": remaining,
-        "warning": used / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD,
+        "warning": (
+            f"⚠️ Đã dùng {round(used/DAILY_TOKEN_LIMIT*100)}% quota"
+            if used / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD
+            else None
+        ),
     }
 
 
@@ -87,7 +91,9 @@ def _add_tokens(user_id: str, count: int) -> dict:
     remaining = max(0, DAILY_TOKEN_LIMIT - new_total)
 
     warning = (
-        new_total / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD
+        f"⚠️ Đã dùng {round(new_total/DAILY_TOKEN_LIMIT*100)}% quota"
+        if new_total / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD
+        else None
     )
 
     return {

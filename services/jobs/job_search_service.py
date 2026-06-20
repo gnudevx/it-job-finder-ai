@@ -688,9 +688,13 @@ def normalize_job_terms(message: str) -> list[str]:
 # Helper: count title matches for a detected job term in the message
 
 def count_title_matches_by_message(message: str) -> dict:
+    """
+    Count jobs whose title contains all significant keywords (length >= 3) from the message.
+    Uses $indexOfCP for case-insensitive substring matching.
+    Returns dict with term (joined keywords), count, and distinct title count.
+    """
     try:
         collection = _get_jobs_collection()
-
         if not message.strip():
             return {
                 "term": None,
@@ -709,23 +713,30 @@ def count_title_matches_by_message(message: str) -> dict:
                 "distinct_titles_len": 0
             }
 
-        # Build  query for title containing each keyword (case-insensitive)
-        keyword_patterns = []
+        # Build $and conditions using $indexOfCP for case-insensitive substring match
+        and_conditions = []
         for kw in significant_keywords:
-            keyword_patterns.append({"title": {"$regex": re.escape(kw), "$options": "i"}})
+            and_conditions.append({
+                "$expr": {
+                    "$gte": [
+                        { "$indexOfCP": [ { "$toLower": "$title" }, { "$toLower": kw } ] },
+                        0
+                    ]
+                }
+            })
 
-        title_query = {
+        query = {
+            "$and": and_conditions,
             "publishStatus": "approved",
-            "visibility": "visible",
-            "$and": keyword_patterns
+            "visibility": "visible"
         }
 
-        count = collection.count_documents(title_query)
+        count = collection.count_documents(query)
 
-        distinct_titles = collection.distinct("title", title_query)
+        distinct_titles = collection.distinct("title", query)
 
         logger.info(
-            "Title count (AND keywords)",
+            "Title count (AND keywords via indexOfCP)",
             extra={
                 "keywords": significant_keywords,
                 "count": count,
@@ -733,15 +744,12 @@ def count_title_matches_by_message(message: str) -> dict:
             }
         )
 
-        # For term, we can join significant_keywords with space for display
         term = " ".join(significant_keywords)
-
         return {
             "term": term,
             "count": count,
             "distinct_titles_len": len(distinct_titles)
         }
-
     except Exception as e:
         logger.exception(e)
         return {
@@ -749,8 +757,6 @@ def count_title_matches_by_message(message: str) -> dict:
             "count": 0,
             "distinct_titles_len": 0
         }
-
-
 def count_title_noexp_matches_by_message(message: str) -> int:
     """
     Count jobs whose titles match significant keywords (length >= 3) AND require no experience.
