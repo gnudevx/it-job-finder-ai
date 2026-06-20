@@ -1,6 +1,6 @@
 
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from datetime import datetime
 
 
@@ -33,6 +33,7 @@ class ChatResponse(BaseModel):
     tokens_remaining: int
     warning: Optional[str] = None
     detected_intent: Optional[str] = None  # intent thực tế sau khi detect (để FE biết có context switch không)
+    jobs: Optional[List[dict]] = None  # Optional list of matched jobs (safe fields)
 
 
 # ── CV Upload ─────────────────────────────────────────────────────────────────

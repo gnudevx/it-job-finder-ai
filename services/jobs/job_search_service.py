@@ -16,10 +16,20 @@ from typing import Optional
 from pymongo import MongoClient, DESCENDING
 from core.config import settings
 from typing import Any
+from difflib import SequenceMatcher
+import time
+
 logger = logging.getLogger(__name__)
 
 # ── Singleton client ──────────────────────────────────────────────────────────
 _mongo_client: MongoClient | None = None
+
+# Cache for distinct job titles (refresh every 30 minutes)
+_job_titles_cache = {
+    "titles": [],
+    "timestamp": 0,
+    "ttl": 1800  # 30 minutes
+}
 
 # Tên DB của Node.js server (xem .env Node.js hoặc config/db.js)
 JOBS_DB_NAME = "it-job-finder"   # Sẽ fallback sang JOBS_MONGO_DB nếu không tìm thấy
@@ -47,6 +57,114 @@ def _get_jobs_collection():
     return _mongo_client[settings.JOBS_MONGO_DB]["jobs"]
 
 
+def _get_all_job_titles_cached() -> list[str]:
+    """
+    Get all distinct job titles from DB with caching.
+    Refreshes cache every 30 minutes.
+    """
+    global _job_titles_cache
+    
+    now = time.time()
+    # Check if cache is still valid
+    if (_job_titles_cache["titles"] and 
+        (now - _job_titles_cache["timestamp"]) < _job_titles_cache["ttl"]):
+        return _job_titles_cache["titles"]
+    
+    try:
+        collection = _get_jobs_collection()
+        titles = collection.distinct("title", {
+            "publishStatus": "approved",
+            "visibility": "visible"
+        })
+        
+        # Update cache
+        _job_titles_cache["titles"] = titles or []
+        _job_titles_cache["timestamp"] = now
+        
+        logger.info(f"Updated job titles cache: {len(titles)} titles")
+        return _job_titles_cache["titles"]
+    except Exception as e:
+        logger.exception(f"Failed to get job titles from DB: {e}")
+        # Return cached titles even if update fails
+        return _job_titles_cache.get("titles", [])
+
+
+def detect_best_matching_job_title(message: str, min_similarity: float = 0.4) -> Optional[str]:
+    """
+    Detect best matching job title from DB by comparing message keywords with all titles.
+    Uses fuzzy string matching to handle typos, variations.
+    
+    Strategy:
+    1. If message contains keyword that appears in multiple titles, prefer those titles
+    2. Score each title by number of keyword matches + similarity
+    3. Return title with highest score
+    
+    Args:
+        message: User message
+        min_similarity: Minimum similarity ratio (0-1) to consider a match
+        
+    Returns:
+        Best matching job title or None if no good match found
+    """
+    if not message or not message.strip():
+        return None
+    
+    all_titles = _get_all_job_titles_cached()
+    if not all_titles:
+        return None
+    
+    msg_lower = message.lower().strip()
+    keywords = extract_keywords(message)
+    
+    if not keywords:
+        return None
+    
+    best_match = None
+    best_score = min_similarity
+    
+    logger.info(f"Detecting job title for message: '{message}', keywords: {keywords}")
+    
+    # Score each title based on keyword matches + similarity
+    for title in all_titles:
+        title_lower = title.lower()
+        keyword_match_count = 0
+        max_similarity = 0
+        
+        # Count how many keywords match this title
+        for keyword in keywords:
+            keyword_lower = keyword.lower()
+            
+            # Check if keyword is substring of title (exact match = high score)
+            if keyword_lower in title_lower:
+                keyword_match_count += 1
+                # Substring match is very good
+                similarity = 1.0
+            else:
+                # Fuzzy match
+                similarity = SequenceMatcher(None, keyword_lower, title_lower).ratio()
+            
+            max_similarity = max(max_similarity, similarity)
+        
+        # Composite score: prefer titles with more keyword matches, then by similarity
+        composite_score = (
+            (keyword_match_count / len(keywords))
+            * 0.7
+            + max_similarity * 0.3
+        )
+        
+        if composite_score > best_score:
+            best_score = composite_score
+            best_match = title
+            logger.debug(f"Better match: '{title}' (keywords_matched: {keyword_match_count}, similarity: {max_similarity:.2f}, score: {composite_score:.2f})")
+    
+    if best_match:
+        logger.info(f"Best matching job title: '{best_match}' (score: {best_score:.2f})")
+    else:
+        logger.info(f"No job title matched for message: '{message}'")
+    
+    return best_match
+
+
 
 # ── Keyword extraction ────────────────────────────────────────────────────────
 
@@ -68,6 +186,40 @@ JOB_TITLE_KEYWORDS = {
     "kỹ", "sư", "lập", "trình", "thiết", "kế", "quản", "trị", "phân", "tích",
     "developer", "engineer", "designer", "manager", "tester", "intern", "fresher",
     "junior", "senior", "lead", "architect", "sales", "marketing", "hr", "admin"
+}
+
+JOB_ALIASES = {
+    "software engineering":[
+        "software engineer",
+        "software developer",
+        "software engineering",
+        "swe"
+    ],
+
+    "frontend":[
+        "frontend",
+        "front end",
+        "frontend developer"
+    ],
+
+    "backend":[
+        "backend",
+        "back end",
+        "backend developer"
+    ],
+
+    "fullstack":[
+        "fullstack",
+        "full stack",
+        "fullstack developer"
+    ],
+
+    "it support":[
+        "it support",
+        "it helpdesk",
+        "helpdesk",
+        "support"
+    ]
 }
 
 def extract_keywords(message: str) -> list[str]:
@@ -148,20 +300,21 @@ def _build_search_query(keywords: list[str], location_ids: list = [], employer_i
 
     # 3. Điều kiện về kỹ năng / title (nếu có job_keywords)
     if job_keywords:
-        and_conditions = []
+        query["$or"]=[]
+
         for kw in job_keywords:
-            pattern = {"$regex": kw, "$options": "i"}
-            and_conditions.append({
-                "$or": [
-                    {"title": pattern},
-                    {"mustHaveSkills": pattern},
-                    {"optionalSkills": pattern},
-                    {"specialization": pattern},
-                    {"experience": pattern},
-                    {"level": pattern},
-                ]
-            })
-        query["$and"] = and_conditions
+
+            pattern = {
+                "$regex": kw,
+                "$options":"i"
+            }
+
+            query["$or"].extend([
+                {"title":pattern},
+                {"mustHaveSkills":pattern},
+                {"optionalSkills":pattern},
+                {"jobDescription":pattern}
+            ])
 
     return query
 
@@ -264,6 +417,14 @@ def search_jobs_from_message(message: str) -> list[dict]:
     """
     try:
         keywords = extract_keywords(message)
+        normalized_terms = normalize_job_terms(
+            message
+        )
+
+        keywords.extend(normalized_terms)
+
+        keywords = list(set(keywords))
+
         collection = _get_jobs_collection()
         db = collection.database
 
@@ -314,6 +475,18 @@ def search_jobs_from_message(message: str) -> list[dict]:
             employer_ids=employer_ids,
             matched_company_keywords=matched_company_keywords,
             matched_location_keywords=matched_location_keywords
+        )
+        logger.info(
+            "Built job search query",
+            extra={
+                "event": "built_query",
+                "keywords": keywords,
+                "matched_company_keywords": matched_company_keywords,
+                "matched_location_keywords": matched_location_keywords,
+                "location_ids": [str(x) for x in location_ids],
+                "employer_ids": [str(x) for x in employer_ids],
+                "query": query,
+            },
         )
 
         raw_jobs = list(
@@ -403,6 +576,19 @@ def count_jobs_from_message(message: str) -> int:
             matched_location_keywords=matched_location_keywords
         )
 
+        logger.info(
+            "Count jobs query",
+            extra={
+                "event": "count_query",
+                "keywords": keywords,
+                "matched_company_keywords": matched_company_keywords,
+                "matched_location_keywords": matched_location_keywords,
+                "location_ids": [str(x) for x in location_ids],
+                "employer_ids": [str(x) for x in employer_ids],
+                "query": query,
+            },
+        )
+
         return collection.count_documents(query)
 
     except Exception as e:
@@ -454,3 +640,209 @@ def build_faq_messages(session_id: str, user_message: str, job_context: str) -> 
         messages.append({"role": "user", "content": user_message})
 
     return messages
+
+def normalize_job_terms(message: str) -> list[str]:
+    """
+    Normalize job terms from message using dynamic title detection.
+    Returns list of related job titles from DB.
+    
+    This replaces the old static JOB_ALIASES with dynamic detection.
+    """
+    if not message or not message.strip():
+        return []
+    
+    # Get the best matching title
+    matched_title = detect_best_matching_job_title(message, min_similarity=0.4)
+    
+    if not matched_title:
+        return []
+    
+    # Extract keywords to find all related titles
+    keywords = extract_keywords(message)
+    significant_keywords = [kw for kw in keywords if len(kw) >= 3]
+    
+    if not significant_keywords:
+        return [matched_title]
+    
+    # Find all titles matching the keywords
+    try:
+        collection = _get_jobs_collection()
+        keyword_patterns = []
+        for kw in significant_keywords:
+            keyword_patterns.append({"title": {"$regex": re.escape(kw), "$options": "i"}})
+        
+        query = {
+            "publishStatus": "approved",
+            "visibility": "visible",
+            "$or": keyword_patterns
+        }
+        
+        related_titles = collection.distinct("title", query)
+        # Limit to top 10 related titles
+        return related_titles[:10] if related_titles else [matched_title]
+    except Exception as e:
+        logger.exception(f"Error in normalize_job_terms: {e}")
+        return [matched_title]
+
+
+# Helper: count title matches for a detected job term in the message
+
+def count_title_matches_by_message(message: str) -> dict:
+    try:
+        collection = _get_jobs_collection()
+
+        if not message.strip():
+            return {
+                "term": None,
+                "count": 0,
+                "distinct_titles_len": 0
+            }
+
+        # Extract significant keywords (length >= 3)
+        keywords = extract_keywords(message)
+        significant_keywords = [kw for kw in keywords if len(kw) >= 3]
+
+        if not significant_keywords:
+            return {
+                "term": None,
+                "count": 0,
+                "distinct_titles_len": 0
+            }
+
+        # Build  query for title containing each keyword (case-insensitive)
+        keyword_patterns = []
+        for kw in significant_keywords:
+            keyword_patterns.append({"title": {"$regex": re.escape(kw), "$options": "i"}})
+
+        title_query = {
+            "publishStatus": "approved",
+            "visibility": "visible",
+            "$and": keyword_patterns
+        }
+
+        count = collection.count_documents(title_query)
+
+        distinct_titles = collection.distinct("title", title_query)
+
+        logger.info(
+            "Title count (AND keywords)",
+            extra={
+                "keywords": significant_keywords,
+                "count": count,
+                "distinct_titles": len(distinct_titles)
+            }
+        )
+
+        # For term, we can join significant_keywords with space for display
+        term = " ".join(significant_keywords)
+
+        return {
+            "term": term,
+            "count": count,
+            "distinct_titles_len": len(distinct_titles)
+        }
+
+    except Exception as e:
+        logger.exception(e)
+        return {
+            "term": None,
+            "count": 0,
+            "distinct_titles_len": 0
+        }
+
+
+def count_title_noexp_matches_by_message(message: str) -> int:
+    """
+    Count jobs whose titles match significant keywords (length >= 3) AND require no experience.
+    Uses dynamic title detection to find all related titles.
+    Returns integer count.
+    """
+    try:
+        collection = _get_jobs_collection()
+        if not message or not message.strip():
+            return 0
+
+        # Extract keywords (only significant ones)
+        keywords = extract_keywords(message)
+        significant_keywords = [kw for kw in keywords if len(kw) >= 3]
+        
+        if not significant_keywords:
+            return 0
+
+        # Build OR query for titles containing significant keywords
+        keyword_patterns = []
+        for kw in significant_keywords:
+            keyword_patterns.append({"title": {"$regex": re.escape(kw), "$options": "i"}})
+
+        # Experience patterns indicating no experience required
+        exp_pattern = "không|không yêu cầu|no experience|no|none|0|fresher|intern|mới"
+        
+        # Use $and with $or for title matching
+        query = {
+            "$and": [
+                {"$or": keyword_patterns},
+                {
+                    "$or": [
+                        {"experience": {"$regex": exp_pattern, "$options": "i"}},
+                        {"experience": ""},
+                        {"experience": {"$exists": False}}
+                    ]
+                }
+            ],
+            "publishStatus": "approved",
+            "visibility": "visible"
+        }
+        
+        count = int(collection.count_documents(query))
+        logger.info(f"No-experience title matches: {count}")
+        return count
+    except Exception as e:
+        logger.exception(f"Count title no-exp matches failed: {e}")
+        return 0
+
+
+def get_title_matched_jobs(message: str, limit: int = 5) -> list[dict]:
+    """
+    Get jobs whose title matches the best-matching title detected from message.
+    Uses dynamic title detection and exact regex match (not semantic search).
+    Returns list of safe job fields, sorted by recency.
+    """
+    try:
+        collection = _get_jobs_collection()
+        db = collection.database
+
+        if not message or not message.strip():
+            return []
+
+        # Use dynamic title detection
+        matched_title = detect_best_matching_job_title(message, min_similarity=0.5)
+        
+        if not matched_title:
+            return []
+
+        query = {
+            "title": {"$regex": re.escape(matched_title), "$options": "i"},
+            "publishStatus": "approved",
+            "visibility": "visible"
+        }
+
+        raw_jobs = list(
+            collection.find(query)
+            .sort("createdAt", -1)  # DESCENDING
+            .limit(limit)
+        )
+
+        safe_jobs = [_safe_job_fields(j, db) for j in raw_jobs]
+        logger.info(
+            "Title-matched jobs found",
+            extra={
+                "event": "title_matched_search",
+                "matched_title": matched_title,
+                "count": len(safe_jobs),
+            },
+        )
+        return safe_jobs
+    except Exception as e:
+        logger.exception(f"Title-matched job search failed: {e}")
+        return []
+

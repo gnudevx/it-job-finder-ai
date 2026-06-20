@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     ]
 
     # ── MongoDB ──────────────────────────────────────────────────────────
-    MONGODB_URI: str = "mongodb://mongo:27017"
+    MONGODB_URI: str = "mongodb://22110434_db_user:Tinvn1201@ac-obmd0vz-shard-00-00.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-01.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-02.e0lm6xu.mongodb.net:27017/ITJOBS?ssl=true&replicaSet=atlas-13rwz6-shard-0&authSource=admin&appName=ITJOBS-Cluster"
     MONGODB_DB: str = "cv_chatbot"
 
     # MongoDB chứa jobs thực tế (lấy từ Node.js server)
-    JOBS_MONGO_URI: str = "mongodb://mongo:27017"
+    JOBS_MONGO_URI: str = "mongodb://22110434_db_user:Tinvn1201@ac-obmd0vz-shard-00-00.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-01.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-02.e0lm6xu.mongodb.net:27017/ITJOBS?ssl=true&replicaSet=atlas-13rwz6-shard-0&authSource=admin&appName=ITJOBS-Cluster"
     JOBS_MONGO_DB: str = "ITJOBS"
 
     # ── Redis ─────────────────────────────────────────────────────────────

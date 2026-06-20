@@ -19,13 +19,12 @@ from services.CV.rag.rag_service import (
     clear_history,
     get_active_cv_id,
 )
+
 from services.AI.llm_service import chat_completion, get_token_usage
 from services.AI.intent_service import detect_intent, did_context_switch
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
 @router.post("/", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
@@ -78,20 +77,29 @@ async def chat(
     messages: list[dict] = []
     cv_context = ""
     job_context = ""
+    job_results: list = []
 
     if detected_intent == "faq":
         # FAQ mode: tìm job từ DB, có thể kết hợp CV context nếu có
         try:
             from services.jobs.job_search_service import (
                 search_jobs_from_message,
+                get_title_matched_jobs,
                 count_jobs_from_message,
                 format_jobs_for_llm,
                 build_faq_messages,
                 get_active_job_suggestions,
                 _get_jobs_collection,
             )
-            job_results = search_jobs_from_message(body.message)
+            # Try title-matched jobs first (exact title match)
+            job_results = get_title_matched_jobs(body.message, limit=3)
             is_suggestion = False
+            
+            # If no title match found, fallback to semantic search
+            if not job_results:
+                job_results = search_jobs_from_message(body.message)
+                
+            # If still no results, use suggestions
             if not job_results:
                 col = _get_jobs_collection()
                 job_results = get_active_job_suggestions(col.database)
@@ -106,6 +114,7 @@ async def chat(
                 total_count=total_active,
                 matched_count=matched_active
             )
+            # Note: title-match stats now added later in deterministic summary (avoid duplication)
             messages = build_faq_messages(body.session_id, body.message, job_context)
             
             # Hybrid: load thêm CV context để AI trả lời có cá nhân hóa dựa trên CV
@@ -142,6 +151,7 @@ async def chat(
                     total_count=total_active,
                     matched_count=matched_active
                 )
+                # Note: title-match stats now added later in deterministic summary (avoid duplication)
                 logger.info(
                     "Hybrid mode (CV/Interview + Job): loaded job context",
                     extra={"event": "hybrid_job_load", "jobs_found": len(job_results)},
@@ -152,6 +162,75 @@ async def chat(
 
 
     # ── Gọi LLM ──────────────────────────────────────────────────────────────
+    # Build deterministic summary (counts + top-3 jobs) to ensure numerical answers
+    deterministic_summary = ""
+    try:
+        from services.jobs.job_search_service import (
+            count_title_matches_by_message,
+            count_title_noexp_matches_by_message,
+            count_jobs_from_message,
+        )
+
+        # compute totals
+        total_active = locals().get("total_active")
+        if total_active is None:
+            total_active = count_jobs_from_message("")
+
+        matched_active = locals().get("matched_active")
+        if matched_active is None:
+            matched_active = count_jobs_from_message(body.message)
+
+        title_stats = count_title_matches_by_message(body.message)
+        noexp_count = count_title_noexp_matches_by_message(body.message)
+
+        parts = []
+        if title_stats and title_stats.get("count", 0) > 0:
+            term = title_stats.get("term") or body.message
+            parts.append(
+                f"Tìm cụm '{term}' trong tiêu đề → {title_stats.get('count')} công việc (số tiêu đề khác nhau: {title_stats.get('distinct_titles_len')})."
+            )
+            # Use title match count instead of semantic count for accuracy
+            display_matched = title_stats.get("count")
+        else:
+            display_matched = matched_active
+
+        parts.append(f"Số công việc khớp với yêu cầu tìm kiếm: {display_matched} (tổng công việc active: {total_active}).")
+
+        if noexp_count and noexp_count > 0:
+            parts.append(f"Trong đó có {noexp_count} công việc không yêu cầu kinh nghiệm.")
+
+        # Append top-3 job summaries (if any)
+        if job_results:
+            parts.append("\nTop công việc (tối đa 3):")
+            for i, job in enumerate(job_results[:3], start=1):
+                parts.append(
+                    f"[{i}] {job.get('title')} — {job.get('company')} — Kinh nghiệm: {job.get('experience')} — Lương: {job.get('salary')} — Hạn nộp: {job.get('deadline')} — Link: /jobs/{job.get('id')}"
+                )
+
+        deterministic_summary = "\n".join(parts)
+    except Exception as e:
+        logger.warning(f"Failed to build deterministic summary: {e}")
+
+    # If FAQ mode and we have a deterministic summary from DB, return it directly
+    # to ensure authoritative numeric answers and avoid duplicated summaries.
+    if detected_intent == "faq" and deterministic_summary:
+        usage = get_token_usage(user.user_id)
+        assistant_reply = deterministic_summary
+
+        # Save history and return without calling LLM
+        save_message(body.session_id, user.user_id, "user", body.message)
+        save_message(body.session_id, user.user_id, "assistant", assistant_reply)
+
+        return ChatResponse(
+            reply=assistant_reply,
+            session_id=body.session_id,
+            tokens_used=usage.get("used", 0),
+            tokens_remaining=usage.get("remaining", 0),
+            warning=usage.get("warning"),
+            detected_intent=detected_intent,
+            jobs=job_results[:3],
+        )
+
     try:
         result = chat_completion(
             messages=messages,
@@ -165,18 +244,22 @@ async def chat(
         logger.exception("LLM failed", extra={"user_id": user.user_id})
         raise HTTPException(status_code=502, detail="Lỗi khi gọi AI model")
 
+    # Use LLM reply as final answer (deterministic summary only for FAQ short-circuit above)
+    assistant_reply = result.get("reply") or ""
+
     # ── Lưu lịch sử vào MongoDB ───────────────────────────────────────────────
     save_message(body.session_id, user.user_id, "user", body.message)
-    save_message(body.session_id, user.user_id, "assistant", result["reply"])
+    save_message(body.session_id, user.user_id, "assistant", assistant_reply)
 
     # ── Trả về ───────────────────────────────────────────────────────────────
     return ChatResponse(
-        reply=result["reply"],
+        reply=assistant_reply,
         session_id=body.session_id,
         tokens_used=result["tokens_used"],
         tokens_remaining=result["tokens_remaining"],
         warning=result.get("warning"),
         detected_intent=detected_intent,    # FE dùng để hiện thông báo context switch
+        jobs=job_results[:3],
     )
 
 
