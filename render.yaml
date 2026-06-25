@@ -47,56 +47,10 @@ services:
       - key: JOBS_MONGO_DB
         value: ITJOBS
 
-      # ── Upstash Redis ─────────────────────────────────────────────────────
-      - key: REDIS_URL
-        sync: false   # Set thủ công: rediss://...upstash.io:6379
-
       # ── Gemini API ────────────────────────────────────────────────────────
       - key: GEMINI_API_KEY
         sync: false
 
       # ── Groq API ─────────────────────────────────────────────────────────
-      - key: GROQ_API_KEY
-        sync: false
-
-  # ── 2. Celery Background Worker (xử lý CV embedding) ─────────────────────
-  - type: worker
-    name: it-job-finder-ai-worker
-    runtime: python
-    region: singapore
-    plan: free
-
-    buildCommand: pip install --prefer-binary -r requirements.txt
-    startCommand: celery -A workers.celery_app worker --loglevel=info --concurrency=1
-
-    envVars:
-      # Celery Worker cần cùng config như FastAPI để kết nối Redis + MongoDB
-      - key: PYTHON_VERSION
-        value: 3.11.9
-
-      - key: APP_ENV
-        value: production
-
-      - key: ACCESS_TOKEN_SECRET
-        sync: false
-
-      - key: MONGODB_URI
-        sync: false
-
-      - key: MONGODB_DB
-        value: cv_chatbot
-
-      - key: JOBS_MONGO_URI
-        sync: false
-
-      - key: JOBS_MONGO_DB
-        value: ITJOBS
-
-      - key: REDIS_URL
-        sync: false
-
-      - key: GEMINI_API_KEY
-        sync: false
-
       - key: GROQ_API_KEY
         sync: false

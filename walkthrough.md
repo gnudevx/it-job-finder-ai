@@ -68,74 +68,55 @@
 
 ---
 
-## Bước 3: Tạo Upstash Redis (miễn phí)
-
-1. Vào [console.upstash.com](https://console.upstash.com) → đăng ký/đăng nhập
-2. **Create Database** → chọn:
-   - Name: `it-job-finder-redis`
-   - Type: **Regional**
-   - Region: **AP-Southeast-1 (Singapore)**
-   - Free tier ✓
-3. Sau khi tạo xong → copy **"Redis URL"**:
-   ```
-   rediss://default:xxxxxxxxxxxx@xxx.upstash.io:6379
-   ```
-   → **lưu lại chuỗi này**
-
----
-
-## Bước 4: Push code lên GitHub
+## Bước 3: Push code lên GitHub
 
 ```bash
 cd d:\NamCuoi\TLCN\it-job-finder\it-job-finder-ai-chat
 git add .
-git commit -m "feat: replace ChromaDB with MongoDB Atlas Vector Search, add render.yaml"
+git commit -m "feat: migrate from Celery to FastAPI BackgroundTasks, remove Redis dependency"
 git push origin master
 ```
 
 > [!IMPORTANT]
-> Đảm bảo file `.env` **KHÔNG** được commit lên GitHub (check `.gitignore`)
+> Đảm bảo file `.env` **KHÔNG** được commit lên GitHub (kiểm tra `.gitignore`).
 
 ---
 
-## Bước 5: Deploy lên Render
+## Bước 4: Deploy lên Render
 
 1. Vào [render.com](https://render.com) → đăng nhập → **"New"** → **"Blueprint"**
 2. Kết nối GitHub → chọn repo `it-job-finder-ai-chat`
-3. Render sẽ tự đọc `render.yaml` và hiện ra **2 service**:
+3. Render sẽ tự đọc `render.yaml` và hiện ra **1 service duy nhất**:
    - `it-job-finder-ai` (Web Service — FastAPI)
-   - `it-job-finder-ai-worker` (Worker — Celery)
 4. Click **"Apply"**
 
 ---
 
-## Bước 6: Set Environment Variables trên Render
+## Bước 5: Set Environment Variables trên Render
 
-> Làm cho **CẢ 2 service** (Web + Worker đều cần cùng env vars)
-
-Vào mỗi service → **Environment** → Add variables:
+Vào service `it-job-finder-ai` → **Environment** → Add variables hoặc chỉnh sửa (chỉ cần cấu hình một lần):
 
 | Key | Value |
 |---|---|
-| `ACCESS_TOKEN_SECRET` | Copy từ `it-job-finder-server/.env` dòng 7 |
-| `MONGODB_URI` | URI Atlas cluster mới (bước 1) |
+| `ACCESS_TOKEN_SECRET` | `bb30dacf285e732a6b936aa363bf6585b763218a770921cda8a88de1a45189450d699c82121737b1ac2d446861a1d78e7134dcdc5d22583375db357d7277c571` |
+| `MONGODB_URI` | `mongodb+srv://a01654464356_db_user:1SI0Yi35yYnYzUrz@cv-chatbot-cluster.wyrxasp.mongodb.net/?appName=cv-chatbot-cluster` |
 | `MONGODB_DB` | `cv_chatbot` |
 | `JOBS_MONGO_URI` | URI Atlas cluster của Node.js server (chuỗi trong `it-job-finder-server/.env` dòng 2) |
 | `JOBS_MONGO_DB` | `ITJOBS` |
-| `REDIS_URL` | URL Upstash Redis (bước 3) |
 | `GEMINI_API_KEY` | API key Gemini của bạn |
 | `GROQ_API_KEY` | API key Groq của bạn |
 
-> [!TIP]
-> Render có tính năng **"Shared Environment Groups"** — set 1 lần, dùng cho cả 2 service. Vào **Environment** → **Environment Groups** → tạo group `ai-service-config`.
+> [!IMPORTANT]
+> **Đảm bảo Whitelist IP trên MongoDB Atlas:**
+> Để Render có thể kết nối thành công với MongoDB Atlas mà không bị lỗi SSL handshake, bạn **bắt buộc** phải cấu hình Network Access trên MongoDB Atlas cho phép mọi IP (`0.0.0.0/0`).
+> Xem hướng dẫn chi tiết ở phần phản hồi chat để khắc phục lỗi SSL này.
 
 ---
 
-## Bước 7: Kiểm tra URL sau khi deploy
+## Bước 6: Kiểm tra URL sau khi deploy
 
 Sau khi deploy xong, Render sẽ cấp URL:
 - FastAPI: `https://it-job-finder-ai.onrender.com`
-- Celery Worker: không có URL (background process)
 
 **Test thử**:
 ```
@@ -145,13 +126,13 @@ https://it-job-finder-ai.onrender.com/docs
 
 ---
 
-## Bước 8: Cập nhật FASTAPI_URL trên Render (Node.js server)
+## Bước 7: Cập nhật FASTAPI_URL trên Render (Node.js server)
 
 Vào Render → service `it-job-finder-server` → **Environment** → thêm/sửa:
 ```
 FASTAPI_URL = https://it-job-finder-ai.onrender.com
 ```
-→ Save → service tự động redeploy
+→ Save → service tự động redeploy.
 
 ---
 
@@ -160,11 +141,9 @@ FASTAPI_URL = https://it-job-finder-ai.onrender.com
 ```
 User → https://it-job-finder-client-five.vercel.app (Vercel, đã chạy)
           → https://it-job-finder-server.onrender.com (Render, đã chạy)
-                → https://it-job-finder-ai.onrender.com (Render, mới deploy)
+                → https://it-job-finder-ai.onrender.com (Render FastAPI Web Service + BackgroundTasks)
                       → MongoDB Atlas cv-chatbot-cluster (chat, metadata, vectors)
                       → MongoDB Atlas ITJOBS cluster (jobs data, đã có)
-                      → Upstash Redis (Celery queue)
-                → [Celery Worker] (Render Worker, cùng repo)
 ```
 
 ---
@@ -174,16 +153,15 @@ User → https://it-job-finder-client-five.vercel.app (Vercel, đã chạy)
 > **"Sau khi deploy xong thì có dùng được như Docker không?"**
 
 **Đúng!** Sau khi setup xong:
-- Không cần chạy Docker nữa
-- Không cần mở máy tính lên
-- Hệ thống chạy 24/7 trên cloud, có HTTPS, có domain public
+- Không cần chạy Docker nữa.
+- Không cần mở máy tính lên.
+- Hệ thống chạy 24/7 trên cloud, có HTTPS, có domain public.
 
 > **"Push code lên master là tự động chạy?"**
 
 **Đúng!** Khi đã kết nối GitHub với Render:
-- Push lên `master` → Render **tự động detect** → build lại → deploy mới
-- Vercel cũng vậy — frontend push là tự redeploy
+- Push lên `master` (hoặc `main`) → Render **tự động detect** → build lại → deploy mới.
+- Vercel cũng vậy — frontend push là tự redeploy.
 
 > [!WARNING]
-> **Giới hạn Render Free Tier**: Sau 15 phút không có request, service sẽ "ngủ". Request đầu tiên sau khi ngủ mất ~30-50 giây để wake up. Đây là hạn chế của free plan, không thể tránh khỏi nếu không upgrade.
-
+> **Giới hạn Render Free Tier**: Sau 15 phút không có request, service sẽ "ngủ". Request đầu tiên sau khi ngủ mất ~30-50 giây để wake up. Đây là hạn chế của free plan, không thể tránh khỏi nếu không nâng cấp.
