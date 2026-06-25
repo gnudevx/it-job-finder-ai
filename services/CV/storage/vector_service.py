@@ -1,51 +1,83 @@
 """
-VectorService — lưu và query CV embeddings trong ChromaDB.
+VectorService — lưu và query CV embeddings trong MongoDB Atlas Vector Search.
 
-Collection name: "cv_chunks"
-Mỗi document trong ChromaDB gồm:
-  - id: "{cv_id}_{chunk_index}" (unique)
-  - embedding: list[float] 384 dims
-  - document: text của chunk
-  - metadata: {user_id, cv_id, filename, chunk_index, char_start, char_end}
+Thay thế ChromaDB bằng MongoDB Atlas Vector Search (free M0 tier).
+
+Collection: cv_vectors (trong DB cv_chatbot)
+Schema mỗi document:
+  {
+    _id: ObjectId,
+    chunk_id: str,          # "{cv_id}_{chunk_index}" — unique
+    cv_id: str,
+    user_id: str,
+    filename: str,
+    chunk_index: int,
+    char_start: int,
+    char_end: int,
+    text: str,              # text của chunk
+    embedding: list[float], # 384-dim vector (all-MiniLM-L6-v2)
+  }
+
+Atlas Vector Search Index (tạo thủ công 1 lần trên Atlas UI):
+  Index name: cv_embedding_index
+  Collection: cv_chatbot.cv_vectors
+  Definition:
+    {
+      "fields": [
+        {
+          "type": "vector",
+          "path": "embedding",
+          "numDimensions": 384,
+          "similarity": "cosine"
+        },
+        {
+          "type": "filter",
+          "path": "cv_id"
+        },
+        {
+          "type": "filter",
+          "path": "user_id"
+        }
+      ]
+    }
 """
 
 import logging
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from pymongo import MongoClient, UpdateOne
+from pymongo.collection import Collection
 from services.CV.processing.chunking_service import TextChunk
 from core.config import settings
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "cv_chunks"
-_chroma_client = None
+COLLECTION_NAME = "cv_vectors"
+VECTOR_INDEX_NAME = "cv_embedding_index"
+
+_mongo_client = None
 
 
-def _get_client() -> Any:
-    """Singleton ChromaDB client."""
-    global _chroma_client
-    if _chroma_client is None:
-        _chroma_client = chromadb.HttpClient(
-            host=settings.CHROMA_HOST,
-            port=settings.CHROMA_PORT,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
+def _get_collection() -> Collection:
+    """Singleton MongoDB client → collection cv_vectors."""
+    global _mongo_client
+    if _mongo_client is None:
+        _mongo_client = MongoClient(settings.MONGODB_URI, serverSelectionTimeoutMS=5000)
         logger.info(
-            "ChromaDB client initialized",
-            extra={"event": "chroma_connected", "host": settings.CHROMA_HOST},
+            "MongoDB Vector client initialized",
+            extra={"event": "mongo_vector_connected"},
         )
-    return _chroma_client
+    db = _mongo_client[settings.MONGODB_DB]
+    col = db[COLLECTION_NAME]
 
+    # Tạo index thường (unique) cho chunk_id — để upsert nhanh
+    try:
+        col.create_index("chunk_id", unique=True, background=True)
+        col.create_index("cv_id", background=True)
+        col.create_index("user_id", background=True)
+    except Exception:
+        pass  # Index đã tồn tại — bỏ qua
 
-def _get_collection():
-    """Lấy hoặc tạo collection cv_chunks."""
-    client = _get_client()
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        # cosine: phù hợp với normalized embeddings từ EmbeddingService
-        metadata={"hnsw:space": "cosine"},
-    )
+    return col
 
 
 class VectorService:
@@ -59,7 +91,7 @@ class VectorService:
         filename: str,
     ) -> None:
         """
-        Lưu chunks + embeddings vào ChromaDB.
+        Lưu chunks + embeddings vào MongoDB Atlas.
 
         Args:
             chunks: list TextChunk (text + metadata)
@@ -73,37 +105,41 @@ class VectorService:
 
         col = _get_collection()
 
-        # ChromaDB nhận list — chuẩn bị batch
-        ids = [f"{cv_id}_{chunk.chunk_index}" for chunk in chunks]
-        documents = [chunk.text for chunk in chunks]
-        metadatas = [
-            {
-                "user_id": user_id,
+        # Chuẩn bị batch upsert — dùng bulk_write để tối ưu
+        operations = []
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk_id = f"{cv_id}_{chunk.chunk_index}"
+            doc = {
+                "chunk_id": chunk_id,
                 "cv_id": cv_id,
+                "user_id": user_id,
                 "filename": filename,
                 "chunk_index": chunk.chunk_index,
                 "char_start": chunk.char_start,
                 "char_end": chunk.char_end,
+                "text": chunk.text,
+                "embedding": embedding,  # list[float] 384 dims
             }
-            for chunk in chunks
-        ]
+            operations.append(
+                UpdateOne(
+                    {"chunk_id": chunk_id},
+                    {"$set": doc},
+                    upsert=True,
+                )
+            )
 
-        # upsert: nếu id đã tồn tại → overwrite (an toàn khi re-upload)
-        col.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-        )
-
-        logger.info(
-            "Vectors stored",
-            extra={
-                "event": "vectors_stored",
-                "cv_id": cv_id,
-                "chunk_count": len(chunks),
-            },
-        )
+        if operations:
+            result = col.bulk_write(operations, ordered=False)
+            logger.info(
+                "Vectors stored",
+                extra={
+                    "event": "vectors_stored",
+                    "cv_id": cv_id,
+                    "chunk_count": len(chunks),
+                    "upserted": result.upserted_count,
+                    "modified": result.modified_count,
+                },
+            )
 
     def delete_existing_cv(self, cv_id: str) -> None:
         """
@@ -111,13 +147,15 @@ class VectorService:
         Tránh duplicate khi user upload lại CV cùng tên.
         """
         col = _get_collection()
-        # ChromaDB filter theo metadata
-        existing = col.get(where={"cv_id": cv_id})
-        if existing and existing["ids"]:
-            col.delete(ids=existing["ids"])
+        result = col.delete_many({"cv_id": cv_id})
+        if result.deleted_count > 0:
             logger.info(
                 "Existing vectors deleted",
-                extra={"event": "vectors_deleted", "cv_id": cv_id, "count": len(existing["ids"])},
+                extra={
+                    "event": "vectors_deleted",
+                    "cv_id": cv_id,
+                    "count": result.deleted_count,
+                },
             )
 
     def query_similar_chunks(
@@ -128,35 +166,88 @@ class VectorService:
         top_k: int = 3,
     ) -> list[dict]:
         """
-        Tìm top-k chunks gần nhất với query embedding.
-        Filter theo user_id + cv_id để chỉ tìm trong CV của user đó.
+        Tìm top-k chunks gần nhất với query embedding dùng Atlas Vector Search.
+        Filter theo cv_id để chỉ tìm trong CV của user đó.
 
         Returns:
             list[dict] với keys: text, score, chunk_index, cv_id
         """
         col = _get_collection()
 
-        results = col.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where={"cv_id": {"$eq": cv_id}},
-            include=["documents", "metadatas", "distances"],
+        # Atlas Vector Search $vectorSearch aggregation pipeline
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": VECTOR_INDEX_NAME,
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": top_k * 10,  # candidates = numResults * 10 (best practice)
+                    "limit": top_k,
+                    "filter": {"cv_id": {"$eq": cv_id}},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "text": 1,
+                    "chunk_index": 1,
+                    "cv_id": 1,
+                    # vectorSearchScore: điểm similarity từ Atlas
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+
+        try:
+            results = list(col.aggregate(pipeline))
+        except Exception as e:
+            logger.error(
+                "Atlas Vector Search failed",
+                extra={"event": "vector_search_failed", "error": str(e), "cv_id": cv_id},
+            )
+            # Fallback: text search nếu Vector Search index chưa tạo
+            return self._fallback_text_search(col, cv_id, top_k)
+
+        logger.info(
+            "Vector search done",
+            extra={
+                "event": "vector_search_done",
+                "cv_id": cv_id,
+                "results": len(results),
+            },
         )
-
-        if not results["documents"] or not results["documents"][0]:
-            return []
-
-        # ChromaDB trả về nested list [[...]] — lấy phần tử đầu
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
-        distances = results["distances"][0]
 
         return [
             {
-                "text": docs[i],
-                "score": round(1 - distances[i], 4),  # cosine distance → similarity
-                "chunk_index": metas[i].get("chunk_index"),
-                "cv_id": metas[i].get("cv_id"),
+                "text": r["text"],
+                "score": round(r.get("score", 0), 4),
+                "chunk_index": r.get("chunk_index"),
+                "cv_id": r.get("cv_id"),
             }
-            for i in range(len(docs))
+            for r in results
+        ]
+
+    def _fallback_text_search(self, col: Collection, cv_id: str, top_k: int) -> list[dict]:
+        """
+        Fallback khi Atlas Vector Search index chưa tạo:
+        lấy chunks theo cv_id, sort theo chunk_index.
+        Dùng trong quá trình setup lần đầu.
+        """
+        logger.warning(
+            "Using fallback text search — Atlas Vector Search index may not be ready",
+            extra={"event": "vector_search_fallback", "cv_id": cv_id},
+        )
+        docs = list(
+            col.find({"cv_id": cv_id}, {"_id": 0, "text": 1, "chunk_index": 1, "cv_id": 1})
+            .sort("chunk_index", 1)
+            .limit(top_k)
+        )
+        return [
+            {
+                "text": d["text"],
+                "score": 1.0,  # fallback không có score thật
+                "chunk_index": d.get("chunk_index"),
+                "cv_id": d.get("cv_id"),
+            }
+            for d in docs
         ]

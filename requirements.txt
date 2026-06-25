@@ -15,7 +15,7 @@ pymongo==4.8.0
 redis[asyncio]==5.0.8
 
 # ── Vector DB ─────────────────────────────────────────────────────────────────
-chromadb==0.5.15
+# ChromaDB đã được thay thế bằng MongoDB Atlas Vector Search (free, không cần service riêng)
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
 groq==0.11.0

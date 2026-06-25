@@ -16,22 +16,20 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",    # React dev
         "http://localhost:5000",    # Node.js gateway
+        "https://it-job-finder-client-five.vercel.app",  # Production frontend
+        "https://it-job-finder-server.onrender.com",     # Production Node.js
     ]
 
-    # ── MongoDB ──────────────────────────────────────────────────────────
+    # ── MongoDB (cv_metadata, chat_history, cv_vectors) ─────────────────
     MONGODB_URI: str = "mongodb://mongo:27017"
     MONGODB_DB: str = "cv_chatbot"
 
-    # MongoDB chứa jobs thực tế (lấy từ Node.js server)
+    # MongoDB chứa jobs thực tế (cùng cluster với Node.js server)
     JOBS_MONGO_URI: str = "mongodb://mongo:27017"
     JOBS_MONGO_DB: str = "ITJOBS"
 
-    # ── Redis ─────────────────────────────────────────────────────────────
+    # ── Redis (Upstash ở production, local redis ở dev) ──────────────────
     REDIS_URL: str = "redis://redis:6379/0"
-
-    # ── ChromaDB ──────────────────────────────────────────────────────────
-    CHROMA_HOST: str = "chromadb"
-    CHROMA_PORT: int = 8001
 
     # ── LLM APIs (free tier) ──────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
