@@ -22,13 +22,15 @@ from groq import Groq, RateLimitError as GroqRateLimitError
 from google.genai.errors import ClientError as GeminiClientError
 from groq.types.chat import ChatCompletionMessageParam
 from core.config import settings
-from redis.client import Redis
 from google.genai import types
+from pymongo import MongoClient, ReturnDocument
+from pymongo.collection import Collection
+
 logger = logging.getLogger(__name__)
 
 # ── Singleton clients ─────────────────────────────────────────────────────────
 _groq_client: Optional[Groq] = None
-_redis_client = None
+_mongo_client = None
 
 DAILY_TOKEN_LIMIT = settings.DAILY_TOKEN_LIMIT
 WARNING_THRESHOLD = settings.TOKEN_WARNING_THRESHOLD
@@ -44,11 +46,18 @@ def _get_groq() -> Groq:
     return _groq_client
 
 
-def _get_redis():
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    return _redis_client
+def _get_mongo_tokens_collection() -> Collection:
+    global _mongo_client
+    if _mongo_client is None:
+        try:
+            _mongo_client = MongoClient(settings.MONGODB_URI, serverSelectionTimeoutMS=5000)
+            _mongo_client.admin.command('ping')
+            logger.info("✅ MongoDB token client connected successfully")
+        except Exception as e:
+            logger.exception(f"❌ MongoDB token connection failed: {e}")
+            raise
+    db = _mongo_client[settings.MONGODB_DB]
+    return db["user_tokens"]
 
 
 # ── Token tracking ────────────────────────────────────────────────────────────
@@ -59,11 +68,13 @@ def _token_key(user_id: str) -> str:
 
 
 def get_token_usage(user_id: str) -> dict:
-    r = _get_redis()
-
-    value = cast(str | None, r.get(_token_key(user_id)))
-
-    used = int(value) if value is not None else 0
+    try:
+        col = _get_mongo_tokens_collection()
+        doc = col.find_one({"_id": _token_key(user_id)})
+        used = doc.get("used", 0) if doc else 0
+    except Exception as e:
+        logger.error(f"Failed to get token usage from MongoDB: {e}")
+        used = 0
 
     remaining = max(0, DAILY_TOKEN_LIMIT - used)
 
@@ -76,19 +87,21 @@ def get_token_usage(user_id: str) -> dict:
 
 
 def _add_tokens(user_id: str, count: int) -> dict:
-    r = _get_redis()
-
-    key = _token_key(user_id)
-
-    new_total = cast(int, r.incrby(key, count))
-
-    r.expire(key, 90000)
+    try:
+        col = _get_mongo_tokens_collection()
+        doc = col.find_one_and_update(
+            {"_id": _token_key(user_id)},
+            {"$inc": {"used": count}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER
+        )
+        new_total = doc.get("used", 0) if doc else count
+    except Exception as e:
+        logger.error(f"Failed to add tokens in MongoDB: {e}")
+        new_total = count
 
     remaining = max(0, DAILY_TOKEN_LIMIT - new_total)
-
-    warning = (
-        new_total / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD
-    )
+    warning = new_total / DAILY_TOKEN_LIMIT >= WARNING_THRESHOLD
 
     return {
         "used": new_total,
