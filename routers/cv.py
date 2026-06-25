@@ -119,7 +119,7 @@ async def cv_status(
         cv_id=cv_id,
         status=doc["status"],
         chunks_count=doc.get("chunks_count"),
-        uploaded_at=doc.get("uploaded_at"),
+        uploaded_at=doc.get("created_at"),
     )
 
 
