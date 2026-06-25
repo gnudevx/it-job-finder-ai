@@ -1,44 +1,42 @@
 """
 EmbeddingService — chuyển text chunks thành vector embeddings.
 
-Model: all-MiniLM-L6-v2
-  - Nhỏ (80MB), chạy CPU được, miễn phí
-  - Output: 384 dimensions
-  - Max input: 256 tokens (~1000 ký tự)
-  - Đủ tốt cho CV similarity search
+Model: gemini-embedding-001 (Google GenAI API)
+  - Output: 384 dimensions (configured via output_dimensionality)
+  - Chạy hoàn toàn qua Cloud API, không tốn RAM chạy local (tránh OOM 512MB Render)
+  - Tốc độ xử lý nhanh, ổn định
 
-Singleton pattern: load model 1 lần khi khởi động,
-tái sử dụng cho tất cả requests — tránh load lại mỗi lần (chậm ~2s).
+Singleton pattern: khởi tạo GenAI client 1 lần.
 """
 
 import logging
 import time
 from typing import Optional
 from services.CV.processing.chunking_service import TextChunk
+from google import genai
+from google.genai import types
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "all-MiniLM-L6-v2"
-_model_instance = None   # Singleton
+MODEL_NAME = "gemini-embedding-001"
+_gemini_client = None   # Singleton client
 
 
-def _get_model():
-    """Lazy load model — chỉ load lần đầu tiên gọi."""
-    global _model_instance
-    if _model_instance is None:
-        from sentence_transformers import SentenceTransformer
+def _get_client():
+    """Lazy load client — chỉ khởi tạo khi cần."""
+    global _gemini_client
+    if _gemini_client is None:
         logger.info(
-            "Loading embedding model",
-            extra={"event": "model_loading", "model": MODEL_NAME},
+            "Initializing Gemini client for embeddings",
+            extra={"event": "gemini_embeddings_client_loading"},
         )
-        start = time.time()
-        _model_instance = SentenceTransformer(MODEL_NAME)
-        elapsed = round(time.time() - start, 2)
+        _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         logger.info(
-            "Embedding model loaded",
-            extra={"event": "model_loaded", "model": MODEL_NAME, "duration_ms": elapsed * 1000},
+            "Gemini client for embeddings initialized",
+            extra={"event": "gemini_embeddings_client_loaded"},
         )
-    return _model_instance
+    return _gemini_client
 
 
 class EmbeddingService:
@@ -60,7 +58,7 @@ class EmbeddingService:
         texts = [chunk.text for chunk in chunks]
 
         logger.info(
-            "Starting embedding",
+            "Starting embedding via Gemini API",
             extra={
                 "event": "embedding_start",
                 "chunk_count": len(texts),
@@ -68,47 +66,43 @@ class EmbeddingService:
         )
 
         start = time.time()
-        model = _get_model()
+        client = _get_client()
 
-        # batch_size=32: xử lý 32 chunks cùng lúc
-        # show_progress_bar=False: không spam stdout trong production
-        # normalize_embeddings=True: chuẩn hóa về unit vector
-        #   → cosine similarity = dot product (nhanh hơn khi search)
-        embeddings = model.encode(
-            texts,
-            batch_size=32,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
+        # Gọi Gemini embedding API cho list text
+        response = client.models.embed_content(
+            model=MODEL_NAME,
+            contents=texts,
+            config=types.EmbedContentConfig(output_dimensionality=384)
         )
+
+        # Trích xuất values từ response
+        embeddings = [e.values for e in response.embeddings]
 
         elapsed = round(time.time() - start, 2)
 
         logger.info(
-            "Embedding done",
+            "Embedding done via Gemini API",
             extra={
                 "event": "embedding_done",
                 "chunk_count": len(chunks),
-                "vector_dims": embeddings.shape[1] if len(embeddings) > 0 else 0,
+                "vector_dims": len(embeddings[0]) if len(embeddings) > 0 else 0,
                 "duration_ms": elapsed * 1000,
             },
         )
 
-        # Trả về list[list[float]] — ChromaDB cần format này
-        return embeddings.tolist()
+        return embeddings
 
     def embed_query(self, query: str) -> list[float]:
         """
         Embed 1 câu query (dùng khi RAG search).
-        Tách riêng để dễ cache sau này nếu cần.
         """
         if not query or not query.strip():
             raise ValueError("Query rỗng")
 
-        model = _get_model()
-        vector = model.encode(
-            query,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
+        client = _get_client()
+        response = client.models.embed_content(
+            model=MODEL_NAME,
+            contents=query,
+            config=types.EmbedContentConfig(output_dimensionality=384)
         )
-        return vector.tolist()
+        return response.embeddings[0].values

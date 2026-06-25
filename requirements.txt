@@ -12,10 +12,10 @@ PyJWT==2.9.0
 # ── Database ──────────────────────────────────────────────────────────────────
 motor==3.5.1
 pymongo==4.8.0
-redis[asyncio]==5.0.8
+# redis[asyncio]==5.0.8 (đã xóa vì không dùng Celery)
 
 # ── Vector DB ─────────────────────────────────────────────────────────────────
-chromadb==0.5.15
+# ChromaDB đã được thay thế bằng MongoDB Atlas Vector Search (free, không cần service riêng)
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
 groq==0.11.0
@@ -25,10 +25,10 @@ langfuse==2.57.4
 sentence-transformers==3.1.1
 
 # ── PDF parsing ───────────────────────────────────────────────────────────────
-pymupdf==1.24.10
+pymupdf==1.25.5
 
 # ── Background worker ─────────────────────────────────────────────────────────
-celery[redis]==5.4.0
+# celery[redis]==5.4.0 (đã xóa vì chuyển sang FastAPI BackgroundTasks)
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-multipart==0.0.12

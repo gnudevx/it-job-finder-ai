@@ -1,0 +1,56 @@
+# render.yaml — Deploy cả FastAPI Web Service + Celery Worker trên Render.com
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Cách dùng:
+#   1. Push repo lên GitHub
+#   2. Vào render.com → New → Blueprint
+#   3. Kết nối GitHub repo → Render tự đọc file này và tạo cả 2 service
+
+services:
+  # ── 1. FastAPI Web Service (API endpoints) ────────────────────────────────
+  - type: web
+    name: it-job-finder-ai
+    runtime: python
+    region: singapore   # Gần Việt Nam nhất
+    plan: free
+
+    buildCommand: pip install --prefer-binary -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    # Health check — Render dùng để biết service đã sẵn sàng chưa
+    healthCheckPath: /health
+
+    envVars:
+      # ── Python Version ───────────────────────────────────────────────────
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+      # ── App ──────────────────────────────────────────────────────────────
+      - key: APP_ENV
+        value: production
+
+      # ── JWT (phải giống Node.js server) ──────────────────────────────────
+      - key: ACCESS_TOKEN_SECRET
+        sync: false   # Set thủ công trên Render dashboard (secret)
+
+      # ── MongoDB Atlas (cluster mới cho CV/chat) ───────────────────────────
+      - key: MONGODB_URI
+        sync: false   # Set thủ công: mongodb+srv://user:pass@cluster.mongodb.net
+
+      - key: MONGODB_DB
+        value: cv_chatbot
+
+      # ── MongoDB Atlas (cùng cluster Node.js server, đọc jobs) ─────────────
+      - key: JOBS_MONGO_URI
+        sync: false   # Set thủ công: URI Atlas cluster của Node.js
+
+      - key: JOBS_MONGO_DB
+        value: ITJOBS
+
+      # ── Gemini API ────────────────────────────────────────────────────────
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # ── Groq API ─────────────────────────────────────────────────────────
+      - key: GROQ_API_KEY
+        sync: false

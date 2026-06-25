@@ -3,12 +3,12 @@ routers/cv.py — fixed version.
 Fix: except Exception không còn nuốt HTTPException (400, 422...)
 """
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 import uuid
 import logging
 import os
 
-from celery.result import AsyncResult
+# from celery.result import AsyncResult (đã xóa)
 from workers.cv_worker import process_cv
 from services.CV.storage.metadata_service import MetadataService
 from core.dependencies import get_current_user, CurrentUser
@@ -23,6 +23,7 @@ UPLOAD_DIR = "/tmp/cv_uploads"
 
 @router.post("/upload", response_model=CVUploadResponse)
 async def upload_cv(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -67,15 +68,16 @@ async def upload_cv(
             logger.exception(f"❌ Metadata save failed: {db_err}")
             raise
 
-        task: AsyncResult = process_cv.delay( # type: ignore
+        background_tasks.add_task(
+            process_cv,
             cv_id, 
             user.user_id, 
             stored_filename
         )
 
         logger.info(
-            "CV enqueued",
-            extra={"event": "cv_enqueued", "cv_id": cv_id, "task_id": task.id},
+            "CV background task started",
+            extra={"event": "cv_enqueued", "cv_id": cv_id},
         )
 
     except HTTPException:
@@ -117,7 +119,7 @@ async def cv_status(
         cv_id=cv_id,
         status=doc["status"],
         chunks_count=doc.get("chunks_count"),
-        uploaded_at=doc.get("uploaded_at"),
+        uploaded_at=doc.get("created_at"),
     )
 
 

@@ -4,7 +4,7 @@ cv_worker.py — Celery background task xử lý CV sau khi upload.
 Luồng: validate → extract → clean → chunk → embed → store vector → update metadata
 """
 
-from workers.celery_app import celery_app
+# from workers.celery_app import celery_app   # Không dùng Celery nữa
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,16 +18,9 @@ from services.CV.storage.vector_service import VectorService
 from services.CV.storage.metadata_service import MetadataService
 
 
-@celery_app.task(
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-    name="workers.cv_worker.process_cv",
-)
-def process_cv(self, cv_id: str, user_id: str, filename: str):
+def process_cv(cv_id: str, user_id: str, filename: str):
     """
-    Background job: xử lý CV sau khi upload.
-    Gọi từ router: process_cv.delay(cv_id, user.user_id, stored_filename)
+    Background task: xử lý CV sau khi upload bằng FastAPI BackgroundTasks.
     """
     file_path = f"/tmp/cv_uploads/{filename}"
     metadata_service = MetadataService()
@@ -90,7 +83,6 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
         return {"cv_id": cv_id, "status": "done", "chunks": len(chunks)}
 
     except FileValidationError as exc:
-        # File lỗi → KHÔNG retry (vô ích), mark failed ngay
         logger.warning(
             "CV validation failed — not retrying",
             extra={"event": "cv_validation_failed", "cv_id": cv_id, "error": str(exc)},
@@ -101,11 +93,10 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
             user_id=user_id,
             error_message=str(exc),
         )
-        # Không raise self.retry → task kết thúc, không retry
 
     except Exception as exc:
         logger.exception(
-            "CV processing failed — will retry",
+            "CV processing failed",
             extra={"event": "cv_processing_failed", "cv_id": cv_id, "error": str(exc)},
         )
         metadata_service.update_status(
@@ -113,6 +104,4 @@ def process_cv(self, cv_id: str, user_id: str, filename: str):
             status="failed",
             user_id=user_id,
             error_message=str(exc),
-        )
-        # Lỗi bất ngờ → retry theo max_retries=3
-        raise self.retry(exc=exc)
+        )

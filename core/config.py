@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",    # React dev
         "http://localhost:5000",    # Node.js gateway
+        "https://it-job-finder-client-five.vercel.app",  # Production frontend
+        "https://it-job-finder-server.onrender.com",     # Production Node.js
     ]
 
     # ── MongoDB ──────────────────────────────────────────────────────────
@@ -26,12 +28,8 @@ class Settings(BaseSettings):
     JOBS_MONGO_URI: str = "mongodb://22110434_db_user:Tinvn1201@ac-obmd0vz-shard-00-00.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-01.e0lm6xu.mongodb.net:27017,ac-obmd0vz-shard-00-02.e0lm6xu.mongodb.net:27017/ITJOBS?ssl=true&replicaSet=atlas-13rwz6-shard-0&authSource=admin&appName=ITJOBS-Cluster"
     JOBS_MONGO_DB: str = "ITJOBS"
 
-    # ── Redis ─────────────────────────────────────────────────────────────
+    # ── Redis (Upstash ở production, local redis ở dev) ──────────────────
     REDIS_URL: str = "redis://redis:6379/0"
-
-    # ── ChromaDB ──────────────────────────────────────────────────────────
-    CHROMA_HOST: str = "chromadb"
-    CHROMA_PORT: int = 8001
 
     # ── LLM APIs (free tier) ──────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
@@ -53,6 +51,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = Settings()
