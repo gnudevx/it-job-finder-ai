@@ -14,13 +14,17 @@ services:
     region: singapore   # Gần Việt Nam nhất
     plan: free
 
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --prefer-binary -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
 
     # Health check — Render dùng để biết service đã sẵn sàng chưa
     healthCheckPath: /health
 
     envVars:
+      # ── Python Version ───────────────────────────────────────────────────
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
       # ── App ──────────────────────────────────────────────────────────────
       - key: APP_ENV
         value: production
@@ -62,11 +66,14 @@ services:
     region: singapore
     plan: free
 
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --prefer-binary -r requirements.txt
     startCommand: celery -A workers.celery_app worker --loglevel=info --concurrency=1
 
     envVars:
       # Celery Worker cần cùng config như FastAPI để kết nối Redis + MongoDB
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
       - key: APP_ENV
         value: production
 
