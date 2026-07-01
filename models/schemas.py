@@ -14,7 +14,10 @@ from datetime import datetime
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    session_id: str = Field(..., description="UUID phiên chat — client tự tạo và giữ")
+    session_id: Optional[str] = Field(
+        default=None,
+        description="ID phiên chat. Nếu trống, hệ thống sẽ dùng session mặc định cho user",
+    )
     mode: Literal["cv_advisor", "mock_interview", "faq"] = "cv_advisor"
     cv_id: Optional[str] = Field(
         default=None,

@@ -35,7 +35,15 @@ def _get_db():
 
 # ── Conversation history ──────────────────────────────────────────────────────
 
-def save_message(session_id: str, user_id: str, role: str, content: str) -> None:
+def resolve_session_id(session_id: str | None, user_id: str) -> str:
+    """Resolve một session ID ổn định cho user, tránh mất history khi client không gửi session."""
+    raw = (session_id or "").strip()
+    if raw:
+        return raw
+    return f"user:{user_id}:default"
+
+
+def save_message(session_id: str | None, user_id: str, role: str, content: str) -> None:
     """Lưu 1 tin nhắn vào MongoDB."""
     db = _get_db()
     db["chat_history"].insert_one({
@@ -47,7 +55,7 @@ def save_message(session_id: str, user_id: str, role: str, content: str) -> None
     })
 
 
-def get_history(session_id: str, limit: int = 10) -> list[dict]:
+def get_history(session_id: str | None, limit: int = 10) -> list[dict]:
     """
     Lấy `limit` tin nhắn gần nhất của session.
     Trả về theo thứ tự cũ → mới (đúng format cho LLM).
@@ -63,7 +71,7 @@ def get_history(session_id: str, limit: int = 10) -> list[dict]:
     return [{"role": d["role"], "content": d["content"]} for d in reversed(docs)]
 
 
-def clear_history(session_id: str) -> None:
+def clear_history(session_id: str | None) -> None:
     db = _get_db()
     db["chat_history"].delete_many({"session_id": session_id})
 
@@ -139,13 +147,43 @@ def build_rag_messages(
 
 def get_active_cv_id(user_id: str) -> str | None:
     """
-    Lấy cv_id mới nhất của user có status='done'.
-    Dùng khi client không gửi cv_id lên (tự động dùng CV mới nhất).
+    Lấy cv_id đang được đánh dấu active cho user.
+    Nếu chưa có active flag thì fallback về CV mới nhất theo created_at.
     """
     db = _get_db()
     doc = db["cv_metadata"].find_one(
-        {"user_id": user_id, "status": "done"},
+        {"user_id": user_id, "is_active": True},
+        {"cv_id": 1},
+        sort=[("updated_at", DESCENDING)],
+    )
+
+    if doc:
+        return doc["cv_id"]
+
+    doc = db["cv_metadata"].find_one(
+        {"user_id": user_id},
         {"cv_id": 1},
         sort=[("created_at", DESCENDING)],
     )
     return doc["cv_id"] if doc else None
+
+
+def resolve_cv_id(requested_cv_id: str | None, user_id: str) -> str | None:
+    """Chọn CV phù hợp cho user, ưu tiên CV active mới nhất."""
+    active_cv_id = get_active_cv_id(user_id)
+    if not active_cv_id:
+        return requested_cv_id
+
+    if requested_cv_id and requested_cv_id != active_cv_id:
+        logger.info(
+            "Requested CV id does not match active CV; falling back to active CV",
+            extra={
+                "event": "cv_id_fallback",
+                "requested_cv_id": requested_cv_id,
+                "active_cv_id": active_cv_id,
+                "user_id": user_id,
+            },
+        )
+        return active_cv_id
+
+    return requested_cv_id or active_cv_id

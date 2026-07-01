@@ -79,9 +79,7 @@ def _get_collection() -> Collection:
 
     return col
 
-
 class VectorService:
-
     def store_embeddings(
         self,
         chunks: list[TextChunk],

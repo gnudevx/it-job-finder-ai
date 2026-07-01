@@ -17,7 +17,8 @@ from services.CV.rag.rag_service import (
     save_message,
     get_history,
     clear_history,
-    get_active_cv_id,
+    resolve_session_id,
+    resolve_cv_id,
 )
 
 from services.AI.llm_service import chat_completion, get_token_usage
@@ -42,15 +43,17 @@ async def chat(
     5. Trả về reply + detected_intent (để FE biết context switch)
     """
     try:
+        resolved_session_id = resolve_session_id(body.session_id, user.user_id)
+
         logger.info("Chat request", extra={
             "event": "chat_request",
             "user_id": user.user_id,
             "mode": body.mode,
-            "session_id": body.session_id,
+            "session_id": resolved_session_id,
         })
 
-        # 1. Xác định cv_id — dùng CV mới nhất nếu client không gửi
-        cv_id = body.cv_id or get_active_cv_id(user.user_id)
+        # 1. Xác định cv_id — ưu tiên CV active mới nhất của user
+        cv_id = resolve_cv_id(body.cv_id, user.user_id)
 
         if not cv_id and body.mode in ("cv_advisor", "mock_interview"):
             logger.info("No CV found for user", extra={"user_id": user.user_id})
@@ -116,7 +119,7 @@ async def chat(
                     matched_count=matched_active
                 )
                 # Note: title-match stats now added later in deterministic summary (avoid duplication)
-                messages = build_faq_messages(body.session_id, body.message, job_context)
+                messages = build_faq_messages(resolved_session_id, body.message, job_context)
                 
                 # Hybrid: load thêm CV context để AI trả lời có cá nhân hóa dựa trên CV
                 if cv_id:
@@ -136,7 +139,7 @@ async def chat(
             try:
                 messages, cv_context = build_rag_messages(
                     user_message=body.message,
-                    session_id=body.session_id,
+                    session_id=resolved_session_id,
                     user_id=user.user_id,
                     cv_id=cv_id,
                 )
@@ -249,7 +252,7 @@ async def chat(
 
             return ChatResponse(
                 reply=assistant_reply,
-                session_id=body.session_id,
+                session_id=resolved_session_id,
                 tokens_used=usage.get("used", 0),
                 tokens_remaining=usage.get("remaining", 0),
                 warning=usage.get("warning"),
@@ -275,15 +278,15 @@ async def chat(
 
         # ── Lưu lịch sử vào MongoDB ───────────────────────────────────────────────
         try:
-            save_message(body.session_id, user.user_id, "user", body.message)
-            save_message(body.session_id, user.user_id, "assistant", assistant_reply)
+            save_message(resolved_session_id, user.user_id, "user", body.message)
+            save_message(resolved_session_id, user.user_id, "assistant", assistant_reply)
         except Exception as e:
             logger.error(f"Save history failed: {e}")
 
         # ── Trả về ───────────────────────────────────────────────────────────────
         return ChatResponse(
             reply=assistant_reply,
-            session_id=body.session_id,
+            session_id=resolved_session_id,
             tokens_used=result["tokens_used"],
             tokens_remaining=result["tokens_remaining"],
             warning=result.get("warning"),
@@ -310,8 +313,9 @@ async def get_chat_history(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Lấy lịch sử chat của 1 session."""
-    messages = get_history(session_id, limit=50)
-    return {"session_id": session_id, "messages": messages, "count": len(messages)}
+    resolved_session_id = resolve_session_id(session_id, user.user_id)
+    messages = get_history(resolved_session_id, limit=50)
+    return {"session_id": resolved_session_id, "messages": messages, "count": len(messages)}
 
 
 @router.delete("/history/{session_id}")
@@ -320,8 +324,9 @@ async def delete_history(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Xóa lịch sử để bắt đầu phiên mới."""
-    clear_history(session_id)
-    return {"message": "Đã xóa lịch sử", "session_id": session_id}
+    resolved_session_id = resolve_session_id(session_id, user.user_id)
+    clear_history(resolved_session_id)
+    return {"message": "Đã xóa lịch sử", "session_id": resolved_session_id}
 
 
 @router.get("/tokens")

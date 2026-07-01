@@ -92,6 +92,11 @@ class MetadataService:
         }
         if user_id is not None:
             update_fields["user_id"] = user_id
+            col.update_many(
+                {"user_id": user_id, "cv_id": {"$ne": cv_id}},
+                {"$set": {"is_active": False}},
+            )
+            update_fields["is_active"] = True
 
         if filename is not None:
             update_fields["filename"] = filename
