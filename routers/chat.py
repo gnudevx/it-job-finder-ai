@@ -19,6 +19,9 @@ from services.CV.rag.rag_service import (
     clear_history,
     resolve_session_id,
     resolve_cv_id,
+    get_session_cv_id,
+    mark_session_cleared,
+    should_use_active_cv,
 )
 
 from services.AI.llm_service import chat_completion, get_token_usage
@@ -53,7 +56,10 @@ async def chat(
         })
 
         # 1. Xác định cv_id — ưu tiên CV active mới nhất của user
-        cv_id = resolve_cv_id(body.cv_id, user.user_id)
+        if should_use_active_cv(resolved_session_id, user.user_id):
+            cv_id = resolve_cv_id(body.cv_id, user.user_id)
+        else:
+            cv_id = body.cv_id
 
         if not cv_id and body.mode in ("cv_advisor", "mock_interview"):
             logger.info("No CV found for user", extra={"user_id": user.user_id})
@@ -326,6 +332,7 @@ async def delete_history(
     """Xóa lịch sử để bắt đầu phiên mới."""
     resolved_session_id = resolve_session_id(session_id, user.user_id)
     clear_history(resolved_session_id)
+    mark_session_cleared(resolved_session_id, user.user_id)
     return {"message": "Đã xóa lịch sử", "session_id": resolved_session_id}
 
 

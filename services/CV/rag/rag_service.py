@@ -33,6 +33,16 @@ def _get_db():
     return _mongo_client[settings.MONGODB_DB]
 
 
+def _get_session_collection():
+    db = _get_db()
+    col = db["chat_sessions"]
+    try:
+        col.create_index([("session_id", 1), ("user_id", 1)], unique=True, background=True)
+    except Exception:
+        pass
+    return col
+
+
 # ── Conversation history ──────────────────────────────────────────────────────
 
 def resolve_session_id(session_id: str | None, user_id: str) -> str:
@@ -53,6 +63,59 @@ def save_message(session_id: str | None, user_id: str, role: str, content: str) 
         "content": content,
         "created_at": datetime.now(timezone.utc),
     })
+
+
+def get_session_record(session_id: str, user_id: str) -> dict | None:
+    col = _get_session_collection()
+    return col.find_one({"session_id": session_id, "user_id": user_id}, {"_id": 0})
+
+
+def set_session_cv_id(session_id: str, user_id: str, cv_id: str) -> None:
+    col = _get_session_collection()
+    now = datetime.now(timezone.utc)
+    col.update_one(
+        {"session_id": session_id, "user_id": user_id},
+        {
+            "$set": {
+                "cv_id": cv_id,
+                "cleared": False,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"session_id": session_id, "user_id": user_id, "created_at": now},
+        },
+        upsert=True,
+    )
+
+
+def get_session_cv_id(session_id: str, user_id: str) -> str | None:
+    record = get_session_record(session_id, user_id)
+    if record and not record.get("cleared", False):
+        return record.get("cv_id")
+    return None
+
+
+def mark_session_cleared(session_id: str, user_id: str) -> None:
+    col = _get_session_collection()
+    now = datetime.now(timezone.utc)
+    col.update_one(
+        {"session_id": session_id, "user_id": user_id},
+        {
+            "$set": {
+                "cv_id": None,
+                "cleared": True,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"session_id": session_id, "user_id": user_id, "created_at": now},
+        },
+        upsert=True,
+    )
+
+
+def should_use_active_cv(session_id: str, user_id: str) -> bool:
+    record = get_session_record(session_id, user_id)
+    if record is None:
+        return True
+    return not record.get("cleared", False)
 
 
 def get_history(session_id: str | None, limit: int = 10) -> list[dict]:
@@ -138,6 +201,13 @@ def build_rag_messages(
     # Lấy lịch sử chat
     history = get_history(session_id, limit=6)
     messages = history + [{"role": "user", "content": user_message}]
+
+    if not cv_id:
+        # Nếu chưa có CV, thêm prompt rõ ràng để LLM không tự động gọi lại CV cũ
+        messages.insert(0, {
+            "role": "system",
+            "content": "User chưa upload CV mới. Nếu không có CV, không được sử dụng hoặc phỏng đoán thông tin CV cũ."
+        })
 
     return messages, cv_context
 
