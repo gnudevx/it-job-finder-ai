@@ -36,3 +36,5 @@ httpx==0.27.2
 
 google-genai==0.8.0
 google-api-core
+
+boto3
