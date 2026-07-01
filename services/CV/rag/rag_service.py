@@ -202,11 +202,11 @@ def build_rag_messages(
     history = get_history(session_id, limit=6)
     messages = history + [{"role": "user", "content": user_message}]
 
-    if not cv_id:
-        # Nếu chưa có CV, thêm prompt rõ ràng để LLM không tự động gọi lại CV cũ
+    if not cv_context:
+        # Nếu không lấy được nội dung CV, thêm prompt rõ ràng để LLM không tái sử dụng CV cũ
         messages.insert(0, {
             "role": "system",
-            "content": "User chưa upload CV mới. Nếu không có CV, không được sử dụng hoặc phỏng đoán thông tin CV cũ."
+            "content": "Không có nội dung CV cụ thể để tham khảo. Nếu CV mới chưa sẵn sàng, không được sử dụng hoặc suy đoán dựa trên CV cũ."
         })
 
     return messages, cv_context

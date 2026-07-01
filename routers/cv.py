@@ -6,19 +6,19 @@ Fix: except Exception không còn nuốt HTTPException (400, 422...)
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 import uuid
 import logging
-import os
 
-# from celery.result import AsyncResult (đã xóa)
 from workers.cv_worker import process_cv
 from services.CV.storage.metadata_service import MetadataService
+from services.CV.storage.storage_service import FileStorageService
 from core.dependencies import get_current_user, CurrentUser
 from models.schemas import CVUploadResponse, CVStatusResponse
+
+storage_service = FileStorageService()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
-UPLOAD_DIR = "/tmp/cv_uploads"
 
 
 @router.post("/upload", response_model=CVUploadResponse)
@@ -46,14 +46,9 @@ async def upload_cv(
     # ── Lưu file + enqueue ────────────────────────────────────────────────────
     # HTTPException đi thẳng ra ngoài, Exception khác → 500
     try:
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        stored_filename = f"{cv_id}.pdf"
-        file_path = f"{UPLOAD_DIR}/{stored_filename}"
-
-        with open(file_path, "wb") as f:
-            f.write(full_content)
-        
-        logger.info(f"File saved: {file_path}")
+        stored_key = f"{cv_id}.pdf"
+        saved_path = storage_service.save_file(full_content, stored_key)
+        logger.info("File saved", extra={"key": stored_key, "saved_path": saved_path})
 
         # ← DEBUG: kiểm tra metadata lưu thành công không
         try:
@@ -70,9 +65,9 @@ async def upload_cv(
 
         background_tasks.add_task(
             process_cv,
-            cv_id, 
-            user.user_id, 
-            stored_filename
+            cv_id,
+            user.user_id,
+            stored_key,
         )
 
         logger.info(

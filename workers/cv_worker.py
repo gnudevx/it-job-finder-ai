@@ -22,7 +22,10 @@ def process_cv(cv_id: str, user_id: str, filename: str):
     """
     Background task: xử lý CV sau khi upload bằng FastAPI BackgroundTasks.
     """
-    file_path = f"/tmp/cv_uploads/{filename}"
+    from services.CV.storage.storage_service import FileStorageService
+
+    storage_service = FileStorageService()
+    file_path = storage_service.download_to_temp(filename)
     metadata_service = MetadataService()
 
     try:
@@ -104,4 +107,4 @@ def process_cv(cv_id: str, user_id: str, filename: str):
             status="failed",
             user_id=user_id,
             error_message=str(exc),
-        )
+        )

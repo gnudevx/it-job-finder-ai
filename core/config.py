@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = ""
     LANGFUSE_HOST: str = "http://langfuse:3000"   # self-hosted trong Docker
 
+    # ── Storage ─────────────────────────────────────────────────────────────────
+    STORAGE_BACKEND: str = "local"    # local | s3
+    STORAGE_LOCAL_UPLOAD_DIR: str = ".uploads"
+    STORAGE_S3_BUCKET: str = ""
+    STORAGE_S3_REGION: str = ""
+    STORAGE_S3_ENDPOINT_URL: str = ""
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+
     # ── Chunking ─────────────────────────────────────────────────────────
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
