@@ -148,6 +148,7 @@ async def chat(
                     session_id=resolved_session_id,
                     user_id=user.user_id,
                     cv_id=cv_id,
+                    mode=detected_intent,   # truyền mode để mock_interview lấy nhiều chunk CV hơn
                 )
                 
                 from services.jobs.job_search_service import search_jobs_from_message, count_jobs_from_message, format_jobs_for_llm
@@ -240,14 +241,14 @@ async def chat(
 
             try:
                 save_message(
-                    body.session_id,
+                    resolved_session_id,   # ← fix: dùng resolved_session_id, không phải body.session_id
                     user.user_id,
                     "user",
                     body.message
                 )
 
                 save_message(
-                    body.session_id,
+                    resolved_session_id,   # ← fix: dùng resolved_session_id, không phải body.session_id
                     user.user_id,
                     "assistant",
                     assistant_reply

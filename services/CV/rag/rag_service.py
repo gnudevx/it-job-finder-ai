@@ -27,9 +27,33 @@ GENERAL_CV_QUESTIONS = [
 ]
 
 def _get_db():
+    """Lấy MongoDB database, tự reconnect nếu connection bị lỗi."""
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = MongoClient(settings.MONGODB_URI, serverSelectionTimeoutMS=5000)
+        _mongo_client = MongoClient(
+            settings.MONGODB_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=10000,
+            retryWrites=True,
+        )
+    try:
+        # Ping để kiểm tra connection còn sống không
+        _mongo_client.admin.command("ping")
+    except Exception as e:
+        logger.warning(f"MongoDB connection lost, reconnecting: {e}")
+        try:
+            _mongo_client.close()
+        except Exception:
+            pass
+        _mongo_client = None
+        _mongo_client = MongoClient(
+            settings.MONGODB_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=10000,
+            retryWrites=True,
+        )
     return _mongo_client[settings.MONGODB_DB]
 
 
@@ -144,8 +168,13 @@ def clear_history(session_id: str | None) -> None:
 def _is_general_cv_question(message: str) -> bool:
     msg_lower = message.lower()
     return any(kw in msg_lower for kw in GENERAL_CV_QUESTIONS)
-def retrieve_cv_context(user_message: str, user_id: str, cv_id: str | None = None) -> str:
-    """Lấy CV context tương tự từ ChromaDB dựa trên câu hỏi của user."""
+def retrieve_cv_context(
+    user_message: str,
+    user_id: str,
+    cv_id: str | None = None,
+    top_k: int | None = None,
+) -> str:
+    """Lấy CV context tương tự từ MongoDB Atlas Vector Search dựa trên câu hỏi của user."""
     if not cv_id:
         return ""
     try:
@@ -153,15 +182,19 @@ def retrieve_cv_context(user_message: str, user_id: str, cv_id: str | None = Non
         query_vector = embedding_service.embed_query(user_message)
 
         vector_service = VectorService()
-        if _is_general_cv_question(user_message):
-            top_k = 8   # lấy gần hết CV
+        if top_k is not None:
+            # Caller chỉ định top_k cụ thể (ví dụ mock_interview cần nhiều hơn)
+            resolved_top_k = top_k
+        elif _is_general_cv_question(user_message):
+            resolved_top_k = 10  # lấy gần hết CV cho câu hỏi tổng quát
         else:
-            top_k = 2 
+            resolved_top_k = 5   # tăng từ 2→5 để LLM có đủ context
+
         chunks = vector_service.query_similar_chunks(
             query_embedding=query_vector,
             user_id=user_id,
             cv_id=cv_id,
-            top_k=top_k,
+            top_k=resolved_top_k,
         )
         if chunks:
             context_parts = [f"[Đoạn {i+1}]: {c['text']}" for i, c in enumerate(chunks)]
@@ -190,13 +223,19 @@ def build_rag_messages(
     session_id: str,
     user_id: str,
     cv_id: str | None = None,
+    mode: str = "cv_advisor",
 ) -> tuple[list[dict], str]:
     """
     Tạo list messages đầy đủ để gửi LLM:
       [history] + [user message hiện tại]
       CV context được trả về riêng để inject vào System Prompt.
+    
+    mock_interview cần nhiều chunk hơn (top_k=10) để AI có đủ ngữ cảnh
+    hỏi câu kỹ thuật chuyên sâu thay vì câu chung chung.
     """
-    cv_context = retrieve_cv_context(user_message, user_id, cv_id)
+    # mock_interview cần lấy toàn bộ CV để hỏi câu chuyên sâu
+    interview_top_k = 10 if mode == "mock_interview" else None
+    cv_context = retrieve_cv_context(user_message, user_id, cv_id, top_k=interview_top_k)
 
     # Lấy lịch sử chat
     history = get_history(session_id, limit=6)

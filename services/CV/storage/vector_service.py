@@ -228,18 +228,24 @@ class VectorService:
     def _fallback_text_search(self, col: Collection, cv_id: str, top_k: int) -> list[dict]:
         """
         Fallback khi Atlas Vector Search index chưa tạo:
-        lấy chunks theo cv_id, sort theo chunk_index.
-        Dùng trong quá trình setup lần đầu.
+        lấy TẤT CẢ chunks của CV, sort theo chunk_index.
+        
+        Lý do không giới hạn limit=top_k: nếu chỉ lấy N chunk đầu tiên
+        (chunk_index 0,1,2...) thì thường là thông tin cá nhân/mục tiêu chung chung,
+        không có nội dung kỹ năng/kinh nghiệm → LLM hỏi câu chung chung.
+        Lấy toàn bộ CV để LLM đủ context hỏi câu chuyên sâu.
         """
         logger.warning(
-            "Using fallback text search — Atlas Vector Search index may not be ready",
+            "Using fallback text search — Atlas Vector Search index may not be ready. "
+            "Create 'cv_embedding_index' on Atlas UI for semantic search.",
             extra={"event": "vector_search_fallback", "cv_id": cv_id},
         )
+        # Lấy tất cả chunks, không giới hạn theo top_k
         docs = list(
             col.find({"cv_id": cv_id}, {"_id": 0, "text": 1, "chunk_index": 1, "cv_id": 1})
             .sort("chunk_index", 1)
-            .limit(top_k)
         )
+        # Trả về tối đa top_k chunks (nhưng đã có toàn bộ CV để chọn)
         return [
             {
                 "text": d["text"],
@@ -247,5 +253,5 @@ class VectorService:
                 "chunk_index": d.get("chunk_index"),
                 "cv_id": d.get("cv_id"),
             }
-            for d in docs
+            for d in docs[:top_k]
         ]
