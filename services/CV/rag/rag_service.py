@@ -72,9 +72,14 @@ def _get_session_collection():
 def resolve_session_id(session_id: str | None, user_id: str) -> str:
     """Resolve một session ID ổn định cho user, tránh mất history khi client không gửi session."""
     raw = (session_id or "").strip()
-    if raw:
-        return raw
-    return f"user:{user_id}:default"
+    # Nếu session_id rỗng hoặc chứa các chuỗi đại diện cho giá trị chưa khởi tạo từ client
+    if not raw or raw.lower() in ("null", "undefined", "default", "none"):
+        return f"user:{user_id}:default"
+    
+    # Đảm bảo session_id luôn được map với user_id để tránh lộ lịch sử chat giữa các user khác nhau
+    if not raw.startswith("user:"):
+        return f"user:{user_id}:{raw}"
+    return raw
 
 
 def save_message(session_id: str | None, user_id: str, role: str, content: str) -> None:

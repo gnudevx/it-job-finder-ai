@@ -110,11 +110,29 @@ async def cv_status(
         )
         raise HTTPException(status_code=403, detail="Không có quyền truy cập")
 
+    status = doc["status"]
+    intro_message = None
+
+    if status == "done":
+        try:
+            from services.CV.storage.vector_service import VectorService
+            from services.AI.llm_service import generate_cv_intro_message
+
+            # Lấy các chunks đầu tiên của CV để trích xuất vị trí tuyển dụng và giới thiệu
+            chunks = VectorService().get_first_chunks(cv_id, limit=8)
+            cv_text = "\n\n".join([c["text"] for c in chunks])
+
+            intro_message = generate_cv_intro_message(cv_text)
+            logger.info(f"Generated intro message for cv_id={cv_id}")
+        except Exception as e:
+            logger.warning(f"Failed to generate intro message for cv_id={cv_id}: {e}")
+
     return CVStatusResponse(
         cv_id=cv_id,
-        status=doc["status"],
+        status=status,
         chunks_count=doc.get("chunks_count"),
         uploaded_at=doc.get("created_at"),
+        intro_message=intro_message,
     )
 
 

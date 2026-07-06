@@ -53,6 +53,7 @@ class CVStatusResponse(BaseModel):
     status: Literal["uploaded", "processing", "done", "failed"]
     chunks_count: Optional[int] = None
     uploaded_at: Optional[datetime] = None
+    intro_message: Optional[str] = None   # Lời chào từ chatbot khi CV done, FE dùng để hiện message đầu tiên
 
 
 # ── Token quota ───────────────────────────────────────────────────────────────

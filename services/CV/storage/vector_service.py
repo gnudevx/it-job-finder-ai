@@ -156,6 +156,29 @@ class VectorService:
                 },
             )
 
+    def get_first_chunks(self, cv_id: str, limit: int = 8) -> list[dict]:
+        """
+        Lấy N chunks đầu tiên của CV theo chunk_index (không cần embedding).
+        Dùng khi cần đọc nội dung CV để generate intro message hoặc summary.
+
+        Args:
+            cv_id: ID của CV
+            limit: số lượng chunks cần lấy (mặc định 8 để có đủ nội dung)
+
+        Returns:
+            list[dict] với keys: text, chunk_index
+        """
+        col = _get_collection()
+        docs = list(
+            col.find(
+                {"cv_id": cv_id},
+                {"_id": 0, "text": 1, "chunk_index": 1},
+            )
+            .sort("chunk_index", 1)
+            .limit(limit)
+        )
+        return [{"text": d["text"], "chunk_index": d.get("chunk_index", 0)} for d in docs]
+
     def query_similar_chunks(
         self,
         query_embedding: list[float],

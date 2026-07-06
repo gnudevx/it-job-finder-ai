@@ -127,13 +127,39 @@ def build_system_prompt(
     if mode == "cv_advisor":
         prompt = base + """
 
-Vai trò: Chuyên gia HR phân tích CV IT.
-Khi nhận context CV hãy:
-1. Chỉ ra điểm mạnh cụ thể (kỹ năng, kinh nghiệm nổi bật)
-2. Chỉ ra điểm yếu, thiếu sót (từ khóa ATS, format, số liệu cụ thể)  
-3. Gợi ý cải thiện từng phần rõ ràng
-Quan trọng: không bịa thông tin. Chỉ nhận xét dựa trên CV thực tế.
-Nếu không có CV → yêu cầu upload trước."""
+Vai trò: Chuyên gia HR & Tech Lead kỳ cựu chuyên phân tích và tối ưu CV IT.
+Khi nhận được nội dung CV, hãy phản hồi theo đúng cấu trúc sau đây bằng tiếng Việt:
+
+---
+
+### 📊 ĐÁNH GIÁ CHUNG & ĐIỂM SỐ CV
+- **Điểm sức khỏe CV ước lượng:** [Chấm điểm từ 0-100 dựa trên độ hoàn thiện của CV]
+- **Tóm tắt chuyên môn:** [1-2 câu tóm tắt vị trí, công nghệ nổi bật nhất của ứng viên]
+
+### 🔍 PHÂN TÍCH THEO 4 TRỤ CỘT IT CỐT LÕI
+1. **Kết quả & Số liệu định lượng (Impact & Metrics):** 
+   - Đánh giá xem CV có các con số định lượng (%, throughput, thời gian, số user...) chứng minh hiệu quả công việc chưa. Chỉ rõ những câu mô tả còn mơ hồ.
+2. **Độ sâu Tech Stack & Phân nhóm kỹ năng (Tech Stack Depth):** 
+   - Đánh giá cách sắp xếp tech stack trong CV. Các nhóm ngôn ngữ, framework, tools đã phân loại khoa học và thể hiện rõ kỹ năng cốt lõi chưa.
+3. **Mức độ tối ưu từ khóa ATS (ATS Keywords):**
+   - Chỉ ra chính xác 3-5 từ khóa kỹ thuật quan trọng của vị trí ứng viên còn thiếu trong CV (ví dụ: RESTful API, Database Indexing, System Design, Unit Test...).
+4. **Cấu trúc Mô tả Dự án (Project Structure):**
+   - Xem các dự án đã viết theo chuẩn (Bối cảnh - Công nghệ - Đóng góp cá nhân - Kết quả) chưa.
+
+### ✍️ MẪU VIẾT LẠI THỰC TẾ (BEFORE ➜ AFTER)
+[Chọn ra đúng 1 hoặc 2 câu chưa tốt trong CV thực tế của họ và viết lại mẫu để họ thay thế ngay]
+- **Trước:** "[Câu mơ hồ/thiếu số liệu trong CV của họ]"
+- **Sau:** "[Câu viết lại cực kỳ chuyên nghiệp, có số liệu giả định/gợi ý thêm số liệu]"
+
+### 💬 HÃY BẮT ĐẦU CẢI THIỆN
+[Đưa ra 1 câu hỏi tương tác, gợi mở để ứng viên trả lời, từ đó bạn sẽ viết lại giúp họ. Ví dụ: hỏi về kết quả/tốc độ xử lý của một dự án cụ thể xuất hiện trong CV của họ]
+
+---
+
+LƯU Ý QUAN TRỌNG:
+- KHÔNG đưa ra nhận xét chung chung mang tính lý thuyết suông. Mọi nhận xét phải trích dẫn trực tiếp tên dự án, công nghệ hoặc nội dung có trong CV của họ.
+- Không tự bịa ra các công nghệ mới ứng viên chưa từng làm trừ khi đó là đề xuất từ khóa ATS cần bổ sung.
+- Nếu không có CV → yêu cầu upload trước."""
 
     elif mode == "mock_interview":
         pos = job_position or "Software Engineer"
@@ -451,3 +477,45 @@ def chat_completion(
         "warning": warning_msg,
         "model_used": model_used,   # để debug biết dùng model nào
     }
+
+
+def generate_cv_intro_message(cv_text: str) -> str:
+    """
+    Phân tích nội dung CV bằng Gemini và tạo ra tin nhắn chào mừng cá nhân hóa:
+    "Tôi đã thấy CV của bạn -> tôi thấy bạn đang ứng tuyển vị trí *xxx*..."
+    """
+    if not cv_text or not cv_text.strip():
+        return "Chào bạn, tôi đã nhận được CV của bạn. Bạn muốn tôi phỏng vấn thử (mock interview) hay nâng cấp CV (cv advisor)?"
+
+    prompt = f"""
+    Bạn là một trợ lý AI chuyên về tư vấn sự nghiệp IT. Đây là một đoạn nội dung từ CV của ứng viên:
+    ---
+    {cv_text[:3000]}
+    ---
+    
+    Hãy viết một lời chào bằng tiếng Việt ngắn gọn (khoảng 2-3 câu), thân thiện để bắt đầu hội thoại:
+    - Xác nhận đã nhận được CV của ứng viên.
+    - Tìm và chỉ ra vị trí chuyên môn/công nghệ chính mà ứng viên đang ứng tuyển/hướng tới (Ví dụ: Frontend Developer, Backend Developer, Java Engineer, Data Analyst, Node.js Developer, v.v. - hãy dùng vị trí thực tế trong CV).
+    - Mẫu câu cần có dạng: "Tôi đã nhận được CV của bạn và thấy bạn đang hướng tới vị trí *[Tên vị trí]*..."
+    - Hỏi xem ứng viên muốn bắt đầu phỏng vấn thử (mock interview) hay tư vấn/nâng cấp CV (cv advisor).
+    
+    Lưu ý: Không dùng các từ generic như '[Tên vị trí]', hãy điền thông tin thực tế từ CV. Trả lời thật tự nhiên.
+    """
+
+    try:
+        response = _gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={
+                "max_output_tokens": 150,
+                "temperature": 0.5,
+            },
+        )
+        reply = response.text.strip() if response.text else ""
+        if reply:
+            return reply
+    except Exception as e:
+        logger.warning(f"Failed to generate custom CV intro message: {e}")
+
+    # Fallback message
+    return "Chào bạn, tôi đã nhận được CV của bạn. Bạn muốn tôi phỏng vấn thử (mock interview) hay nâng cấp CV (cv advisor)?"
