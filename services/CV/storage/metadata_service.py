@@ -76,6 +76,8 @@ class MetadataService:
         filename: Optional[str] = None,
         chunks_count: Optional[int] = None,
         error_message: Optional[str] = None,
+        intro_message: Optional[str] = None,
+        detected_job_title: Optional[str] = None,
     ) -> None:
         """
         Upsert trạng thái CV.
@@ -106,6 +108,12 @@ class MetadataService:
 
         if error_message is not None:
             update_fields["error_message"] = error_message
+
+        if intro_message is not None:
+            update_fields["intro_message"] = intro_message
+
+        if detected_job_title is not None:
+            update_fields["detected_job_title"] = detected_job_title
 
         try:
             result = col.update_one(

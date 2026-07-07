@@ -111,21 +111,32 @@ async def cv_status(
         raise HTTPException(status_code=403, detail="Không có quyền truy cập")
 
     status = doc["status"]
-    intro_message = None
+    # intro_message và detected_job_title được worker lưu vào DB sau khi xử lý xong
+    # Không cần gọi Gemini mỗi lần poll — chỉ đọc từ DB
+    intro_message = doc.get("intro_message")
 
-    if status == "done":
+    # Fallback: nếu CV đã done nhưng intro chưa có (CV cũ trước khi deploy fix)
+    # thì generate 1 lần và lưu lại để lần sau không cần gọi nữa
+    if status == "done" and not intro_message:
         try:
             from services.CV.storage.vector_service import VectorService
-            from services.AI.llm_service import generate_cv_intro_message
+            from services.AI.llm_service import generate_cv_intro_message, extract_job_title_from_cv
 
-            # Lấy các chunks đầu tiên của CV để trích xuất vị trí tuyển dụng và giới thiệu
             chunks = VectorService().get_first_chunks(cv_id, limit=8)
             cv_text = "\n\n".join([c["text"] for c in chunks])
-
-            intro_message = generate_cv_intro_message(cv_text)
-            logger.info(f"Generated intro message for cv_id={cv_id}")
+            if cv_text.strip():
+                intro_message = generate_cv_intro_message(cv_text)
+                detected_job_title = extract_job_title_from_cv(cv_text)
+                # Lưu lại để lần sau không phải generate
+                MetadataService().update_status(
+                    cv_id=cv_id,
+                    status="done",
+                    intro_message=intro_message,
+                    detected_job_title=detected_job_title,
+                )
+                logger.info(f"Fallback: generated intro for legacy cv_id={cv_id}")
         except Exception as e:
-            logger.warning(f"Failed to generate intro message for cv_id={cv_id}: {e}")
+            logger.warning(f"Fallback intro generation failed for cv_id={cv_id}: {e}")
 
     return CVStatusResponse(
         cv_id=cv_id,

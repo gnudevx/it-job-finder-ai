@@ -70,12 +70,30 @@ def process_cv(cv_id: str, user_id: str, filename: str):
             filename=filename,
         )
 
-        # Bước 7: cập nhật metadata → done
+        # Bước 7: generate intro message và detect job title từ CV (1 lần duy nhất)
+        intro_message = None
+        detected_job_title = None
+        try:
+            from services.AI.llm_service import generate_cv_intro_message, extract_job_title_from_cv
+            # Dùng 8 chunks đầu để extract position + generate greeting
+            cv_preview_text = "\n\n".join([c.text for c in chunks[:8]])
+            intro_message = generate_cv_intro_message(cv_preview_text)
+            detected_job_title = extract_job_title_from_cv(cv_preview_text)
+            logger.info(
+                f"CV intro generated: title='{detected_job_title}'",
+                extra={"event": "cv_intro_generated", "cv_id": cv_id},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate intro for cv_id={cv_id}: {e}")
+
+        # Bước 8: cập nhật metadata → done (bao gồm intro + job_title)
         metadata_service.update_status(
             cv_id=cv_id,
             status="done",
             user_id=user_id,
             chunks_count=len(chunks),
+            intro_message=intro_message,
+            detected_job_title=detected_job_title,
         )
 
         logger.info(
