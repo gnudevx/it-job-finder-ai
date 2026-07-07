@@ -47,11 +47,21 @@ CV_KEYWORDS = [
     "review cv", "phân tích cv", "nhận xét cv", "đánh giá cv",
     "cv có ổn", "cv ổn không", "cv như thế nào",
     "cải thiện cv", "chỉnh sửa cv", "viết lại cv",
-    # Nội dung CV
+    # Nội dung CV — hỏi thông tin từ CV
     "kinh nghiệm của tôi", "kỹ năng của tôi",
     "điểm mạnh của tôi", "điểm yếu của tôi",
     "tôi thiếu", "tôi cần bổ sung",
     "ats", "format cv", "template cv",
+    # Hỏi trực tiếp thông tin trong CV (tránh bị nhầm sang FAQ/mock_interview)
+    "dựa trên cv", "từ cv của tôi", "trong cv của tôi", "cv của tôi có",
+    "tôi đã làm ở", "tôi đã làm việc", "tôi đã từng làm",
+    "kinh nghiệm làm việc của tôi", "số năm kinh nghiệm của tôi",
+    "tôi đã làm ở những đâu", "tôi đã làm ở đâu",
+    "tôi có bao nhiêu năm", "bao nhiêu năm kinh nghiệm",
+    "dự án của tôi", "công ty tôi đã làm",
+    "tôi học ở đâu", "trình độ học vấn của tôi",
+    "chứng chỉ của tôi", "bằng cấp của tôi",
+    "công nghệ tôi biết", "ngôn ngữ tôi dùng",
 ]
 
 INTERVIEW_KEYWORDS = [

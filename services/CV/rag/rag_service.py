@@ -173,6 +173,43 @@ def clear_history(session_id: str | None) -> None:
 def _is_general_cv_question(message: str) -> bool:
     msg_lower = message.lower()
     return any(kw in msg_lower for kw in GENERAL_CV_QUESTIONS)
+
+
+def retrieve_full_cv_context(user_id: str, cv_id: str) -> str:
+    """
+    Lấy TOÀN BỘ nội dung CV theo thứ tự chunk_index — không dùng vector search.
+    Dùng cho mock_interview để AI có đủ context hỏi câu kỹ thuật chuyên sâu,
+    tránh bị phụ thuộc vào câu hỏi ngắn của user làm query embedding kém.
+
+    Returns:
+        Full CV text, hoặc chuỗi rỗng nếu không tìm thấy.
+    """
+    if not cv_id:
+        return ""
+    try:
+        vector_service = VectorService()
+        # limit=100 để lấy toàn bộ CV (thực tế CV thường 10-30 chunks)
+        chunks = vector_service.get_first_chunks(cv_id, limit=100)
+        if chunks:
+            context_parts = [f"[Đoạn {c['chunk_index']+1}]: {c['text']}" for c in chunks]
+            cv_context = "\n\n".join(context_parts)
+            logger.info(
+                "Full CV context retrieved (no vector search)",
+                extra={
+                    "event": "full_cv_retrieved",
+                    "cv_id": cv_id,
+                    "chunks": len(chunks),
+                },
+            )
+            return cv_context
+    except Exception as e:
+        logger.error(
+            f"retrieve_full_cv_context failed: {e}",
+            extra={"event": "full_cv_failed", "cv_id": cv_id},
+        )
+    return ""
+
+
 def retrieve_cv_context(
     user_message: str,
     user_id: str,
@@ -238,9 +275,15 @@ def build_rag_messages(
     mock_interview cần nhiều chunk hơn (top_k=10) để AI có đủ ngữ cảnh
     hỏi câu kỹ thuật chuyên sâu thay vì câu chung chung.
     """
-    # mock_interview cần lấy toàn bộ CV để hỏi câu chuyên sâu
-    interview_top_k = 10 if mode == "mock_interview" else None
-    cv_context = retrieve_cv_context(user_message, user_id, cv_id, top_k=interview_top_k)
+    if mode == "mock_interview":
+        # Mock interview: lấy TOÀN BỘ CV (không dùng vector search theo câu hỏi user)
+        # để AI luôn có đủ context về skills/projects/experience hỏi câu chuyên sâu.
+        cv_context = retrieve_full_cv_context(user_id, cv_id)
+        if not cv_context:
+            # Fallback: nếu không lấy được full CV thì dùng vector search với top_k lớn
+            cv_context = retrieve_cv_context(user_message, user_id, cv_id, top_k=15)
+    else:
+        cv_context = retrieve_cv_context(user_message, user_id, cv_id)
 
     # Lấy lịch sử chat
     history = get_history(session_id, limit=6)

@@ -212,10 +212,28 @@ async def chat(
 
             # Append top-3 job summaries (if any)
             if job_results:
-                parts.append("\nTop công việc (tối đa 3):")
+                parts.append("\n📋 **Top công việc phù hợp:**")
                 for i, job in enumerate(job_results[:3], start=1):
+                    salary = job.get('salary', 'Thỏa thuận')
+                    experience = job.get('experience', 'Không yêu cầu')
+                    deadline_raw = job.get('deadline', '')
+                    # Parse deadline ISO → ngày/tháng/năm nếu là ISO string
+                    if deadline_raw and 'T' in str(deadline_raw):
+                        try:
+                            from datetime import datetime as _dt
+                            d = _dt.fromisoformat(str(deadline_raw).replace('Z', '+00:00'))
+                            deadline_str = d.strftime("%d/%m/%Y")
+                        except Exception:
+                            deadline_str = str(deadline_raw)[:10]
+                    else:
+                        deadline_str = str(deadline_raw) if deadline_raw else "Không rõ"
+                    job_id = job.get('id', '')
                     parts.append(
-                        f"[{i}] {job.get('title')} — {job.get('company')} — Kinh nghiệm: {job.get('experience')} — Lương: {job.get('salary')} — Hạn nộp: {job.get('deadline')} — Link: /jobs/{job.get('id')}"
+                        f"\n[{i}] **{job.get('title')}**\n"
+                        f"   🏢 {job.get('company')}  |  📍 {job.get('province', 'Không rõ')}\n"
+                        f"   💰 {salary}  |  🎯 Kinh nghiệm: {experience}\n"
+                        f"   📅 Hạn nộp: {deadline_str}\n"
+                        f"   🔗 [Xem chi tiết](/jobs/{job_id})"
                     )
 
             deterministic_summary = "\n".join(parts)
