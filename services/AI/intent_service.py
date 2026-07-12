@@ -182,6 +182,24 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
         },
     )
 
+    # ── Bảo vệ chế độ mock_interview ──────────────────────────────────────────
+    # Khi đang trong mock_interview, các câu trả lời kỹ thuật của ứng viên rất dễ bị
+    # nhận diện nhầm là faq (do chứa tech stack) hoặc cv_advisor. 
+    # Do đó, chỉ cho phép thoát mock_interview nếu score của intent mới cực kỳ cao (>= 3)
+    if current_mode == "mock_interview":
+        if best_intent in ("cv_advisor", "faq") and best_score >= 3:
+            logger.info(
+                "Intent switch from mock_interview (high confidence)",
+                extra={
+                    "event": "intent_switch",
+                    "from": current_mode,
+                    "to": best_intent,
+                    "score": best_score,
+                },
+            )
+            return best_intent  # type: ignore[return-value]
+        return "mock_interview"
+
     if best_score >= CONFIDENCE_THRESHOLD:
         # Rule-based confident — switch nếu khác mode hiện tại
         if best_intent != current_mode:
@@ -203,6 +221,7 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
 
     # Score = 0 (không khớp keyword nào) → giữ nguyên mode hiện tại
     return current_mode  # type: ignore[return-value]
+
 
 
 def did_context_switch(detected_intent: str, original_mode: str) -> bool:
