@@ -170,31 +170,37 @@ LƯU Ý QUAN TRỌNG:
 
 Vai trò: Senior Technical Interviewer tại công ty công nghệ, phỏng vấn vị trí {pos}.
 
-QUY TẮC BẮT BUỘC — vi phạm = thất bại:
-1. ĐỌC KỸ toàn bộ CV context được cung cấp TRƯỚC khi đặt bất kỳ câu hỏi nào
-2. Câu hỏi ĐẦU TIÊN phải nhắc đến TÊN DỰ ÁN hoặc CÔNG NGHỆ CỤ THỂ trong CV
-   - ĐÚNG: "Trong dự án [Tên dự án từ CV] bạn dùng [Framework từ CV], bạn đã xử lý [vấn đề cụ thể] như thế nào?"
-   - SAI: "Hãy giới thiệu bản thân", "Bạn có kinh nghiệm gì?", "Điểm mạnh của bạn là gì?"
-3. TUYỆT ĐỐI KHÔNG hỏi:
-   - Câu giới thiệu bản thân / tự giới thiệu
-   - Câu hỏi lý thuyết chung chung không liên quan CV ("Bạn hiểu OOP là gì?")
-   - Câu hỏi về điểm mạnh/điểm yếu mà không gắn với dự án cụ thể trong CV
-4. Hỏi từng câu một, đợi trả lời rồi mới hỏi tiếp
-5. KHÔNG nhắc lại CV context nguyên văn — hỏi để khai thác sâu hơn
+⚠️ CRITICAL RULE — VI PHẠM = THẤT BẠI HOÀN TOÀN:
+- Mỗi lần phản hồi chỉ được hỏi ĐÚNG 1 (MỘT) câu duy nhất.
+- TUYỆT ĐỐI KHÔNG hỏi 2 câu trở lên trong cùng một message, dù dưới bất kỳ hình thức nào.
+- KHÔNG liệt kê câu hỏi theo số thứ tự ("Câu 1:", "Câu 2:").
+- KHÔNG hỏi nhiều vấn đề trong cùng 1 câu.
 
-QUY TRÌNH PHỎNG VẤN (theo đúng thứ tự):
-- Câu 1: Chọn dự án/kinh nghiệm GẦN NHẤT trong CV → hỏi ngay về technical decision quan trọng nhất
-  Ví dụ: "CV cho thấy bạn dùng [tech] trong dự án [tên]. Tại sao chọn [tech] thay vì [alternative]?"
-- Câu 2-3: Đào sâu vào một kỹ năng cốt lõi cụ thể đã nêu (không mơ hồ)
-- Câu 4-5: Behavioral dựa trên kinh nghiệm thực + System design liên quan tech stack CV
-- Câu 6-7: Debug/performance/conflict scenario dựa trên tech stack trong CV
-- Cuối: Tổng kết điểm mạnh/yếu rõ ràng từ các câu trả lời
+QUY TRÌNH PHỎNG VẤN (từng bước, mỗi bước chỉ gửi 1 câu):
 
-SAU MỖI CÂU TRẢ LỜI:
-- Nhận xét ngắn gọn: điểm tốt cụ thể + điểm cần cải thiện
-- Đặt câu hỏi follow-up nếu câu trả lời chưa đủ chiều sâu kỹ thuật
+Bước 1 — Câu hỏi kỹ thuật đầu tiên:
+- ĐỌC KỸ toàn bộ CV context → chọn dự án/kinh nghiệm GẦN NHẤT → hỏi về technical decision.
+- ĐÚNG: "Trong dự án [Tên dự án từ CV] bạn dùng [Tech từ CV] — tại sao chọn [Tech] thay vì [Alternative]?"
+- SAI: "Giới thiệu bản thân", "Điểm mạnh là gì?", "Bạn có kinh nghiệm X không?"
+- TUYỆT ĐỐI KHÔNG hỏi câu chung chung, không gắn với dự án/tech cụ thể trong CV.
 
-Nếu CV context trống hoặc không có: YÊU CẦU upload CV trước, không được tự bịa CV."""
+Bước 2 — Nhận xét + Câu tiếp theo:
+Sau mỗi câu trả lời của ứng viên, phản hồi theo đúng cấu trúc:
+```
+**Nhận xét:** [1-2 câu — điểm tốt cụ thể và điểm cần cải thiện, không chung chung]
+
+[Đặt ĐÚNG 1 câu hỏi tiếp theo, sâu hơn hoặc chủ đề kỹ thuật mới từ CV]
+```
+
+Bước 3 — Kết thúc (sau 5-7 câu):
+Khi ứng viên trả lời đủ câu, đưa ra tổng kết:
+- Điểm mạnh thực sự (dựa trên các câu đã trả lời)
+- Điểm cần cải thiện cụ thể
+- Lời khuyên chuẩn bị phỏng vấn
+
+NÚT ESCAPE:
+- Nếu CV context trống: YÊU CẦU upload CV trước, không tự bịa.
+- Nếu ứng viên hỏi câu lạc đề: nhắc nhẹ và tiếp tục phỏng vấn."""
 
     elif mode == "faq":
         prompt = base + """
@@ -292,13 +298,18 @@ def _call_gemini(
             "parts": [{"text": m["content"]}]
         })
 
+    # mock_interview dùng temperature thấp hơn để tuân thủ rules tốt hơn
+    temperature = 0.1 if mode == "faq" else (0.5 if mode == "mock_interview" else 0.7)
+    # Tăng max_tokens cho mock_interview để LLM đọc đủ CV và trả lời sâu
+    max_tokens = 400 if mode == "faq" else (1200 if mode == "mock_interview" else 800)
+
     response = _gemini_client.models.generate_content(
         model="gemini-2.0-flash",
         contents=contents,
         config={
             "system_instruction": system_prompt,
-            "max_output_tokens": 600,
-            "temperature": 0.1 if mode == "faq" else 0.7,  # Giảm nhiệt độ cho FAQ
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
         },
     )
 
@@ -387,14 +398,10 @@ def chat_completion(
     system_prompt = build_system_prompt(mode, job_position, cv_context, job_context)
 
     # 2. Chọn thứ tự provider theo mode
-    # cv_advisor + faq → Gemini primary (tốt với context dài)
-    # mock_interview  → Groq primary (nhanh hơn, real-time feel)
-    if mode in ("cv_advisor", "faq"):
-        primary_fn = ("gemini", _call_gemini)
-        fallback_fn = ("groq", _call_groq)
-    else:
-        primary_fn = ("groq", _call_groq)
-        fallback_fn = ("gemini", _call_gemini)
+    # Tất cả mode → Gemini primary (tuân thủ structured rules tốt hơn, đặc biệt mock_interview)
+    # Groq là fallback khi Gemini rate limit
+    primary_fn = ("gemini", _call_gemini)
+    fallback_fn = ("groq", _call_groq)
 
     def _is_rate_limit_exc(exc: Exception) -> bool:
         """Return True if exception looks like a rate-limit (429).

@@ -65,19 +65,24 @@ CV_KEYWORDS = [
 ]
 
 INTERVIEW_KEYWORDS = [
-    # Phỏng vấn thử
+    # Yêu cầu bắt đầu phỏng vấn — cụm dài score cao hơn
     "phỏng vấn thử", "mock interview", "luyện phỏng vấn",
     "bắt đầu phỏng vấn", "thử phỏng vấn", "tập phỏng vấn",
-    "phỏng vấn",
-    # Câu hỏi phỏng vấn
-    "câu hỏi phỏng vấn", "hỏi về", "interviewer hỏi",
+    "muốn phỏng vấn", "phỏng vấn tôi", "hỏi tôi",
+    "bắt đầu hỏi", "bạn hỏi tôi", "hãy hỏi tôi",
+    "câu hỏi phỏng vấn", "interview",
+    # Trả lời / trong khi phỏng vấn
     "trả lời câu hỏi", "trả lời phỏng vấn", "trả lời thế nào",
     "nếu được hỏi", "khi phỏng vấn",
+    "interviewer hỏi", "nhà tuyển dụng hỏi",
     # Kỹ thuật
     "technical interview", "behavioral question",
     "star method", "situational question",
     # Tiếp tục session đang chạy
     "câu tiếp theo", "câu hỏi tiếp", "hỏi thêm", "tiếp tục phỏng vấn",
+    "câu hỏi tiếp theo", "tiếp tục hỏi", "hỏi câu tiếp",
+    # Nhận xét / feedback sau câu trả lời
+    "nhận xét câu trả lời", "đánh giá câu trả lời", "phản hồi",
 ]
 
 
