@@ -8,7 +8,17 @@ Cho phép context switch tự do giữa 3 luồng:
   - faq           : tìm kiếm job, hỏi về tuyển dụng
 
 Chiến lược:
-  1. Rule-based keyword scoring (nhanh, free, không tốn token)
+  1. Rule-based keyword scoring, chia 2 tầng:
+       - STRONG: cụm từ thể hiện Ý ĐỊNH rõ ràng, dứt khoát (VD "tìm việc", "review cv")
+                 → chỉ cần khớp 1 lần là đủ tin cậy, tính 3 điểm.
+       - WEAK  : danh từ/chủ đề chuyên ngành, dễ xuất hiện "vô tình" trong nội dung
+                 kỹ thuật không liên quan (VD "mức lương", "tuyển dụng", "data engineer")
+                 → chỉ tính 1 điểm, không đủ để tự switch một mình.
+     Lý do tách: nếu chỉ đếm số lượng keyword khớp mà không phân biệt độ mạnh, một câu
+     trả lời phỏng vấn kỹ thuật dài (nói về dự án phân tích thị trường tuyển dụng, mức
+     lương...) có thể vô tình khớp NHIỀU weak keyword và bị hiểu nhầm là ý định rõ ràng,
+     trong khi một câu ngắn gọn "tôi muốn tìm việc" chỉ khớp ĐÚNG 1 keyword và bị coi là
+     chưa đủ tin cậy. Việc đếm số lượng không phản ánh đúng độ mạnh của ý định.
   2. Nếu score cao nhất < CONFIDENCE_THRESHOLD → LLM classify (~50 token)
   3. Nếu vẫn không rõ → giữ nguyên current_mode
 """
@@ -20,40 +30,61 @@ logger = logging.getLogger(__name__)
 
 # ── Threshold ────────────────────────────────────────────────────────────────
 # Score cần đạt để switch intent (tránh switch nhầm vì 1 từ ngẫu nhiên)
+# Với thang điểm mới: 1 strong keyword = 3 điểm (luôn đủ ngưỡng),
+# weak keyword = 1 điểm/keyword (cần ít nhất 2 weak khớp mới đủ ngưỡng).
 CONFIDENCE_THRESHOLD = 2
 
-# ── Keyword dictionaries ──────────────────────────────────────────────────────
+# Điểm tối thiểu 1 keyword STRONG đóng góp — cố tình > CONFIDENCE_THRESHOLD
+# để 1 lần khớp strong là đủ, không cần cộng dồn.
+STRONG_WEIGHT = 3
+WEAK_WEIGHT = 1
 
-FAQ_KEYWORDS = [
-    # Tìm việc chủ động
+# ── Keyword dictionaries ──────────────────────────────────────────────────────
+# STRONG = ý định hành động rõ ràng, dứt khoát — chỉ cần khớp 1 lần là đủ tin cậy.
+# WEAK   = danh từ/chủ đề chuyên ngành — dễ xuất hiện "vô tình" trong câu trả lời
+#          kỹ thuật (mock_interview) hoặc câu hỏi khác, KHÔNG được tự switch một mình.
+
+FAQ_STRONG_KEYWORDS = [
+    # Tìm việc chủ động — ý định action rõ ràng
     "tìm job", "tìm việc", "có job", "có việc làm", "job nào",
     "còn tuyển", "đang tuyển", "công ty nào tuyển", "vị trí nào còn",
-    # Câu hỏi về job cụ thể
+    "ứng tuyển vào", "apply vào",
+    # Câu hỏi cụ thể về 1 job đã xem (deadline/hạn nộp gắn với hành động apply)
+    "deadline nộp", "hạn nộp",
+]
+
+FAQ_WEAK_KEYWORDS = [
+    # Chủ đề lương/địa điểm — có thể chỉ là mô tả trong câu chuyện, không phải hỏi job
     "lương bao nhiêu", "mức lương", "salary", "thu nhập",
     "địa điểm làm việc", "làm ở đâu", "remote", "onsite",
-    "deadline nộp", "hạn nộp", "ứng tuyển vào", "apply vào",
-    # Từ khoá job search
+    # Danh từ ngành/job-title — RẤT dễ xuất hiện trong CV/mock_interview
+    # (VD ứng viên tự mô tả stack "data engineer", "react", "python developer"...)
     "job ", "jobs ", "tuyển dụng", "cơ hội việc làm", "fresher",
     "senior", "junior", "intern", "thực tập",
     "backend", "frontend", "fullstack", "devops", "ai engineer",
     "data engineer", "mobile", "react", "python developer",
-    # Hỏi về thị trường
-    "thị trường tuyển dụng", "xu hướng tuyển", "nhu cầu tuyển",
+    # Hỏi về thị trường (bỏ "xu hướng tuyển" vì trùng substring với "tuyển dụng"
+    # → tránh 1 cụm bị đếm 2 lần làm điểm ảo)
+    "thị trường tuyển dụng", "nhu cầu tuyển",
 ]
 
-CV_KEYWORDS = [
-    # Đề cập CV/hồ sơ của bản thân
-    "cv của tôi", "cv tôi", "hồ sơ của tôi", "hồ sơ tôi",
+CV_STRONG_KEYWORDS = [
+    # Yêu cầu hành động trực tiếp lên CV — ý định rõ ràng, không thể nhầm lẫn
     "review cv", "phân tích cv", "nhận xét cv", "đánh giá cv",
     "cv có ổn", "cv ổn không", "cv như thế nào",
     "cải thiện cv", "chỉnh sửa cv", "viết lại cv",
-    # Nội dung CV — hỏi thông tin từ CV
+    "dựa trên cv", "từ cv của tôi", "trong cv của tôi", "cv của tôi có",
+    "cv của tôi", "cv tôi", "hồ sơ của tôi", "hồ sơ tôi",
+]
+
+CV_WEAK_KEYWORDS = [
+    # Các câu tự mô tả bản thân ở ngôi thứ nhất — ĐÂY LÀ NGÔN NGỮ TỰ NHIÊN của
+    # một câu trả lời phỏng vấn ("tôi đã làm ở...", "dự án của tôi...").
+    # Không được coi là đủ để tự thoát mock_interview.
     "kinh nghiệm của tôi", "kỹ năng của tôi",
     "điểm mạnh của tôi", "điểm yếu của tôi",
     "tôi thiếu", "tôi cần bổ sung",
     "ats", "format cv", "template cv",
-    # Hỏi trực tiếp thông tin trong CV (tránh bị nhầm sang FAQ/mock_interview)
-    "dựa trên cv", "từ cv của tôi", "trong cv của tôi", "cv của tôi có",
     "tôi đã làm ở", "tôi đã làm việc", "tôi đã từng làm",
     "kinh nghiệm làm việc của tôi", "số năm kinh nghiệm của tôi",
     "tôi đã làm ở những đâu", "tôi đã làm ở đâu",
@@ -89,18 +120,48 @@ INTERVIEW_KEYWORDS = [
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
-def _score_message(message: str) -> dict[str, int]:
+def _score_message(message: str) -> dict[str, dict[str, int]]:
     """
-    Tính score cho mỗi intent dựa trên keyword matching.
-    Score = số lượng keyword khớp (mỗi keyword tính 1 điểm).
+    Tính score cho mỗi intent, tách riêng số lượng keyword STRONG và WEAK khớp được.
+
+    Trả về:
+        {
+          "faq":            {"strong": int, "weak": int, "score": int},
+          "cv_advisor":      {...},
+          "mock_interview":  {...},   # interview giữ 1 tầng duy nhất (ít rủi ro false-positive hơn)
+        }
+    score = strong * STRONG_WEIGHT + weak * WEAK_WEIGHT — dùng để so sánh/threshold chung.
     """
     msg = message.lower()
-    scores = {
-        "faq": sum(1 for kw in FAQ_KEYWORDS if kw in msg),
-        "cv_advisor": sum(1 for kw in CV_KEYWORDS if kw in msg),
-        "mock_interview": sum(1 for kw in INTERVIEW_KEYWORDS if kw in msg),
+
+    def _count(keywords: list[str]) -> int:
+        return sum(1 for kw in keywords if kw in msg)
+
+    faq_strong = _count(FAQ_STRONG_KEYWORDS)
+    faq_weak = _count(FAQ_WEAK_KEYWORDS)
+
+    cv_strong = _count(CV_STRONG_KEYWORDS)
+    cv_weak = _count(CV_WEAK_KEYWORDS)
+
+    interview_hits = _count(INTERVIEW_KEYWORDS)
+
+    return {
+        "faq": {
+            "strong": faq_strong,
+            "weak": faq_weak,
+            "score": faq_strong * STRONG_WEIGHT + faq_weak * WEAK_WEIGHT,
+        },
+        "cv_advisor": {
+            "strong": cv_strong,
+            "weak": cv_weak,
+            "score": cv_strong * STRONG_WEIGHT + cv_weak * WEAK_WEIGHT,
+        },
+        "mock_interview": {
+            "strong": interview_hits,
+            "weak": 0,
+            "score": interview_hits * STRONG_WEIGHT,
+        },
     }
-    return scores
 
 
 def _llm_classify(message: str, current_mode: str) -> str:
@@ -167,15 +228,17 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
         3. Nếu top score < CONFIDENCE_THRESHOLD → gọi LLM classify
         4. Cuối cùng fallback về current_mode
     """
-    scores = _score_message(message)
+    detail = _score_message(message)
+    scores = {k: v["score"] for k, v in detail.items()}
     best_intent = max(scores, key=lambda k: scores[k])
     best_score = scores[best_intent]
+    best_strong = detail[best_intent]["strong"]
 
     logger.info(
         "Intent scores",
         extra={
             "event": "intent_scored",
-            "scores": scores,
+            "detail": detail,
             "best": best_intent,
             "score": best_score,
             "current_mode": current_mode,
@@ -183,18 +246,22 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
     )
 
     # ── Bảo vệ chế độ mock_interview ──────────────────────────────────────────
-    # Khi đang trong mock_interview, các câu trả lời kỹ thuật của ứng viên rất dễ bị
-    # nhận diện nhầm là faq (do chứa tech stack) hoặc cv_advisor. 
-    # Do đó, chỉ cho phép thoát mock_interview nếu score của intent mới cực kỳ cao (>= 3)
+    # Khi đang trong mock_interview, câu trả lời kỹ thuật của ứng viên rất dễ chứa
+    # các danh từ chuyên ngành trùng với FAQ/CV (VD "data engineer", "tuyển dụng",
+    # "dự án của tôi"...) mà KHÔNG hề mang ý định rời khỏi phỏng vấn.
+    # Do đó điều kiện thoát không dựa vào tổng điểm (dễ bị cộng dồn ảo từ nhiều
+    # weak keyword), mà bắt buộc phải có ÍT NHẤT 1 STRONG keyword — tức người dùng
+    # phát ngôn một cụm ý định rõ ràng, không thể là trùng hợp ngẫu nhiên.
     if current_mode == "mock_interview":
-        if best_intent in ("cv_advisor", "faq") and best_score >= 3:
+        if best_intent in ("cv_advisor", "faq") and best_strong >= 1:
             logger.info(
-                "Intent switch from mock_interview (high confidence)",
+                "Intent switch from mock_interview (strong keyword matched)",
                 extra={
                     "event": "intent_switch",
                     "from": current_mode,
                     "to": best_intent,
                     "score": best_score,
+                    "strong_hits": best_strong,
                 },
             )
             return best_intent  # type: ignore[return-value]
@@ -202,6 +269,7 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
 
     if best_score >= CONFIDENCE_THRESHOLD:
         # Rule-based confident — switch nếu khác mode hiện tại
+        # (1 strong keyword luôn đạt ngưỡng này; weak keyword cần >= 2 khớp)
         if best_intent != current_mode:
             logger.info(
                 "Intent context switch (rule-based)",
@@ -215,7 +283,7 @@ def detect_intent(message: str, current_mode: str) -> IntentType:
         return best_intent  # type: ignore[return-value]
 
     if best_score == 1:
-        # Có 1 keyword khớp nhưng chưa confident → LLM classify
+        # Đúng 1 weak keyword khớp, chưa đủ tin cậy → LLM classify
         logger.info("Intent ambiguous, calling LLM classify", extra={"event": "intent_ambiguous"})
         return _llm_classify(message, current_mode)  # type: ignore[return-value]
 
