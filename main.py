@@ -47,7 +47,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Health Check & Root Route ────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    """Root endpoint để Render port scan thành công với 200 OK."""
+    return {"message": "CV Chatbot AI Service is running"}
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint trực tiếp tránh redirect 307 cho Render."""
+    return {"status": "ok", "service": "cv-chatbot-ai"}
+
+
 # ── Routers ─────────────────────────────────────────────────────────────────
 app.include_router(health.router, prefix="/health",  tags=["health"])
 app.include_router(cv.router,     prefix="/api/cv",  tags=["cv"])
-app.include_router(chat.router,   prefix="/api/chat",tags=["chat"])
+app.include_router(chat.router,   prefix="/api/chat",tags=["chat"])
