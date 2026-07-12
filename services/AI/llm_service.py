@@ -246,25 +246,14 @@ Quy tắc:
     === HẾT CV ===
     Phân tích dựa trên CV thực tế ở trên, không được nói "không có thông tin"."""
 
-    # Job context → đưa vào system prompt
-    # QUAN TRỌNG: chỉ ra lệnh "dựa vào danh sách để trả lời" khi mode=faq —
-    # ở cv_advisor/mock_interview, job_context chỉ mang tính THAM KHẢO phụ,
-    # tránh làm model lạc đề, chạy nhầm sang liệt kê job không liên quan.
-    if job_context and mode == "faq":
+    # Job context → đưa vào system prompt (faq mode)
+    if job_context:
         prompt += f"""
 
 === DANH SÁCH VIỆC LÀM ĐANG TUYỂN (dữ liệu thực tế từ hệ thống) ===
 {job_context}
 === HẾT DANH SÁCH ===
 Hãy dựa vào danh sách trên để trả lời. Nếu không có job phù hợp hãy nói thật."""
-    elif job_context:
-        # cv_advisor / mock_interview: gợi ý job chỉ là thông tin phụ, không được
-        # đưa vào trừ khi người dùng hỏi trực tiếp về cơ hội việc làm, và không được
-        # làm thay đổi cấu trúc output đã quy định ở trên.
-        prompt += f"""
-
-(Thông tin thêm — KHÔNG PHẢI yêu cầu chính, chỉ dùng khi thật sự liên quan trực tiếp đến câu hỏi của người dùng, tuyệt đối KHÔNG tự ý chèn danh sách job vào cuối câu trả lời phân tích CV hoặc câu hỏi phỏng vấn):
-{job_context}"""
 
     return prompt
 
