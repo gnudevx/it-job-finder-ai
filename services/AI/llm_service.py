@@ -317,7 +317,7 @@ def _call_gemini(
     max_tokens = 400 if mode == "faq" else (1200 if mode == "mock_interview" else 800)
 
     response = _gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=contents,
         config={
             "system_instruction": system_prompt,
@@ -489,7 +489,7 @@ def extract_job_title_from_cv(cv_text: str) -> str | None:
 
     try:
         response = _gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config={
                 "max_output_tokens": 20,
@@ -533,7 +533,7 @@ def generate_cv_intro_message(cv_text: str) -> str:
 
     try:
         response = _gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config={
                 "max_output_tokens": 150,
