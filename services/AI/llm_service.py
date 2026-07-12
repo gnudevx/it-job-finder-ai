@@ -315,13 +315,13 @@ def _call_gemini(
     temperature = 0.1 if mode == "faq" else (0.5 if mode == "mock_interview" else 0.7)
     # max_tokens theo mode:
     # - faq: câu trả lời ngắn, dựa trên data có sẵn → 400 là đủ
-    # - mock_interview: 1 câu hỏi + nhận xét → 1200
+    # - mock_interview: 1 câu hỏi + nhận xét → 1500
     # - cv_advisor: output có cấu trúc DÀI NHẤT (đánh giá chung, 4 trụ cột phân
     #   tích, mẫu before/after, câu hỏi mở) — 800 token trước đây KHÔNG ĐỦ,
     #   khiến Gemini bị cắt giữa chừng (dừng ngay sau heading đầu tiên) dù
-    #   không hề có lỗi/exception nào xảy ra. Tăng lên 2000 để đủ chỗ viết hết
+    #   không hề có lỗi/exception nào xảy ra. Tăng lên 4000 để đủ chỗ viết hết
     #   cấu trúc yêu cầu trong system prompt.
-    max_tokens = 400 if mode == "faq" else (1200 if mode == "mock_interview" else 2000)
+    max_tokens = 400 if mode == "faq" else (1500 if mode == "mock_interview" else 3500)
 
     response = _gemini_client.models.generate_content(
         model="gemini-2.5-flash",
