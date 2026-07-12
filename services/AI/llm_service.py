@@ -4,11 +4,9 @@ LLMService — Chỉ dùng Gemini cho mọi mode (cv_advisor, mock_interview, fa
 Trước đây có cơ chế fallback qua lại Groq khi Gemini rate-limit, nhưng vì
 Groq free tier (llama-3.1-8b-instant) chỉ có 6000 TPM nên khi fallback với
 context dài (CV, lịch sử chat, job_context...) rất dễ dính lỗi 413 "Request
-too large" ngay lập tức. Ngoài ra, Groq (model nhỏ hơn nhiều) không tuân thủ
-tốt các rule định dạng chặt của mock_interview (dễ lộ "Câu hỏi:", "Dưới đây
-là...", các câu meta hướng dẫn...). Do đó bỏ hẳn việc chuyển qua lại giữa 2
-model: luôn gọi Gemini, nếu lỗi thì trả về thông báo thân thiện thay vì
-raise 502.
+too large" ngay lập tức → user vẫn bị lỗi, trải nghiệm còn tệ hơn không
+fallback. Do đó bỏ hẳn việc chuyển qua lại giữa 2 model: luôn gọi Gemini,
+nếu lỗi thì trả về thông báo thân thiện thay vì raise 502.
 
 Token tracking: MongoDB, reset mỗi ngày, cảnh báo ở 90%.
 """
@@ -31,8 +29,6 @@ from pymongo.collection import Collection
 logger = logging.getLogger(__name__)
 
 # ── Singleton clients ─────────────────────────────────────────────────────────
-# _groq_client / _call_groq được giữ lại (không xoá) phòng khi cần dùng lại,
-# nhưng KHÔNG còn được gọi ở đâu trong chat_completion nữa.
 _groq_client: Optional[Groq] = None
 _mongo_client = None
 
@@ -250,25 +246,14 @@ Quy tắc:
     === HẾT CV ===
     Phân tích dựa trên CV thực tế ở trên, không được nói "không có thông tin"."""
 
-    # Job context → đưa vào system prompt
-    # QUAN TRỌNG: chỉ ra lệnh "dựa vào danh sách để trả lời" khi mode=faq —
-    # ở cv_advisor/mock_interview, job_context chỉ mang tính THAM KHẢO phụ,
-    # tránh làm model lạc đề, chạy nhầm sang liệt kê job không liên quan.
-    if job_context and mode == "faq":
+    # Job context → đưa vào system prompt (faq mode)
+    if job_context:
         prompt += f"""
 
 === DANH SÁCH VIỆC LÀM ĐANG TUYỂN (dữ liệu thực tế từ hệ thống) ===
 {job_context}
 === HẾT DANH SÁCH ===
 Hãy dựa vào danh sách trên để trả lời. Nếu không có job phù hợp hãy nói thật."""
-    elif job_context:
-        # cv_advisor / mock_interview: gợi ý job chỉ là thông tin phụ, không được
-        # đưa vào trừ khi người dùng hỏi trực tiếp về cơ hội việc làm, và không được
-        # làm thay đổi cấu trúc output đã quy định ở trên.
-        prompt += f"""
-
-(Thông tin thêm — KHÔNG PHẢI yêu cầu chính, chỉ dùng khi thật sự liên quan trực tiếp đến câu hỏi của người dùng, tuyệt đối KHÔNG tự ý chèn danh sách job vào cuối câu trả lời phân tích CV hoặc câu hỏi phỏng vấn):
-{job_context}"""
 
     return prompt
 
@@ -359,7 +344,6 @@ def _call_groq(
     system_prompt: str,
     mode: str,
 ) -> tuple[str, int]:
-    """NOTE: không còn được gọi trong chat_completion() — giữ lại phòng khi cần."""
 
     full_messages: list[ChatCompletionMessageParam] = [
         {
@@ -394,7 +378,7 @@ def _call_groq(
     return reply, tokens
 
 
-# ── Router (chỉ Gemini) ────────────────────────────────────────────────────────
+# ── Smart router ──────────────────────────────────────────────────────────────
 
 def chat_completion(
     messages: list[dict],
@@ -456,7 +440,7 @@ def chat_completion(
         "tokens": tokens, "duration_ms": elapsed, "mode": mode,
     })
 
-    # 3. Cộng token vào MongoDB
+    # 4. Cộng token vào Redis
     token_info = _add_tokens(user_id, tokens)
 
     warning_msg = None
@@ -474,6 +458,54 @@ def chat_completion(
         "warning": warning_msg,
         "model_used": model_used,   # để debug biết dùng model nào
     }
+
+
+def extract_job_title_from_cv(cv_text: str) -> str | None:
+    """
+    Trích xuất vị trí công việc / job title chính từ nội dung CV bằng Gemini.
+    Dùng để lưu vào metadata (detected_job_title), phục vụ hiển thị hoặc
+    dùng làm job_position mặc định cho mock_interview.
+
+    Trả về None nếu không xác định được hoặc có lỗi (không raise, để không
+    làm gián đoạn luồng xử lý CV chính ở cv_worker.py).
+    """
+    if not cv_text or not cv_text.strip():
+        return None
+
+    prompt = f"""
+    Đây là một đoạn nội dung từ CV của ứng viên:
+    ---
+    {cv_text[:3000]}
+    ---
+
+    Hãy xác định vị trí công việc / chuyên môn chính mà ứng viên đang hướng tới,
+    dựa trên kinh nghiệm, kỹ năng và các dự án nổi bật nhất trong CV.
+
+    Chỉ trả về ĐÚNG tên vị trí bằng tiếng Anh, ngắn gọn (2-4 từ), không giải
+    thích thêm, không có dấu chấm cuối câu. Ví dụ hợp lệ: "Backend Developer",
+    "Data Analyst", "Frontend Developer (React)", "DevOps Engineer".
+    Nếu không đủ thông tin để xác định, trả về đúng chữ: "Unknown"
+    """
+
+    try:
+        response = _gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={
+                "max_output_tokens": 20,
+                "temperature": 0.0,
+            },
+        )
+        title = response.text.strip() if response.text else ""
+        # Bỏ dấu ngoặc kép/backtick nếu model lỡ bọc quanh kết quả
+        title = title.strip('"`\' \n')
+
+        if not title or title.lower() == "unknown":
+            return None
+        return title
+    except Exception as e:
+        logger.warning(f"Failed to extract job title from CV: {e}")
+        return None
 
 
 def generate_cv_intro_message(cv_text: str) -> str:
