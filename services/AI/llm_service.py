@@ -1,14 +1,16 @@
 """
-LLMService — Smart routing + fallback.
+LLMService — Chỉ dùng Gemini cho mọi mode (cv_advisor, mock_interview, faq).
 
-Chiến lược:
-  cv_advisor   → Gemini 1.5 Flash (giỏi đọc hiểu dài, phân tích)
-                 Nếu Gemini rate limit (429) → fallback Groq
+Trước đây có cơ chế fallback qua lại Groq khi Gemini rate-limit, nhưng vì
+Groq free tier (llama-3.1-8b-instant) chỉ có 6000 TPM nên khi fallback với
+context dài (CV, lịch sử chat, job_context...) rất dễ dính lỗi 413 "Request
+too large" ngay lập tức. Ngoài ra, Groq (model nhỏ hơn nhiều) không tuân thủ
+tốt các rule định dạng chặt của mock_interview (dễ lộ "Câu hỏi:", "Dưới đây
+là...", các câu meta hướng dẫn...). Do đó bỏ hẳn việc chuyển qua lại giữa 2
+model: luôn gọi Gemini, nếu lỗi thì trả về thông báo thân thiện thay vì
+raise 502.
 
-  mock_interview → Groq Llama 3 (nhanh hơn, real-time feel)
-                   Nếu Groq lỗi → fallback Gemini
-
-Token tracking: Redis, reset mỗi ngày, cảnh báo 90%.
+Token tracking: MongoDB, reset mỗi ngày, cảnh báo ở 90%.
 """
 
 import re
@@ -29,6 +31,8 @@ from pymongo.collection import Collection
 logger = logging.getLogger(__name__)
 
 # ── Singleton clients ─────────────────────────────────────────────────────────
+# _groq_client / _call_groq được giữ lại (không xoá) phòng khi cần dùng lại,
+# nhưng KHÔNG còn được gọi ở đâu trong chat_completion nữa.
 _groq_client: Optional[Groq] = None
 _mongo_client = None
 
@@ -355,6 +359,7 @@ def _call_groq(
     system_prompt: str,
     mode: str,
 ) -> tuple[str, int]:
+    """NOTE: không còn được gọi trong chat_completion() — giữ lại phòng khi cần."""
 
     full_messages: list[ChatCompletionMessageParam] = [
         {
@@ -389,7 +394,7 @@ def _call_groq(
     return reply, tokens
 
 
-# ── Smart router ──────────────────────────────────────────────────────────────
+# ── Router (chỉ Gemini) ────────────────────────────────────────────────────────
 
 def chat_completion(
     messages: list[dict],
@@ -400,10 +405,8 @@ def chat_completion(
     job_context: str = "",
 ) -> dict:
     """
-    Smart routing + fallback:
-      cv_advisor     → Gemini primary,  Groq fallback
-      mock_interview → Groq primary,    Gemini fallback
-      faq            → Gemini primary,  Groq fallback (Gemini giỏi đọc context dài)
+    Chỉ dùng Gemini cho mọi mode (cv_advisor, mock_interview, faq).
+    Không còn fallback qua Groq — xem giải thích ở docstring đầu file.
 
     Returns:
       {"reply", "tokens_used", "tokens_remaining", "warning", "model_used"}
@@ -421,71 +424,27 @@ def chat_completion(
 
     system_prompt = build_system_prompt(mode, job_position, cv_context, job_context)
 
-    # 2. Chọn thứ tự provider theo mode
-    # Tất cả mode → Gemini primary (tuân thủ structured rules tốt hơn, đặc biệt mock_interview)
-    # Groq là fallback khi Gemini rate limit
-    primary_fn = ("gemini", _call_gemini)
-    fallback_fn = ("groq", _call_groq)
-
-    def _is_rate_limit_exc(exc: Exception) -> bool:
-        """Return True if exception looks like a rate-limit (429).
-
-        We avoid depending on SDK-specific exception classes to keep
-        behavior robust across versions. Check common indicators.
-        """
-        # Groq explicit exception class
-        try:
-            if isinstance(exc, GroqRateLimitError):
-                return True
-        except Exception:
-            pass
-
-        # Gemini / Google SDK may include a status_code or http_status
-        code = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
-        if isinstance(code, int) and code == 429:
-            return True
-
-        # Fallback textual check
-        msg = str(exc).lower()
-        if "rate" in msg and ("limit" in msg or "429" in msg):
-            return True
-
-        return False
-
-    # 3. Gọi primary, nếu rate limit → fallback
+    # 2. Gọi Gemini. Nếu lỗi (rate limit, timeout, v.v...) → trả message
+    #    thân thiện cho user thay vì raise 502, vì không còn model nào khác
+    #    để fallback sang nữa.
     reply = None
     tokens = 0
-    model_used = None
+    model_used = "gemini"
     start = time.time()
 
     try:
-        model_name, call_fn = primary_fn
-        reply, tokens = call_fn(messages, system_prompt, mode)
-        model_used = model_name
-        logger.info("LLM primary success", extra={
-            "event": "llm_primary_ok", "model": model_name,
+        reply, tokens = _call_gemini(messages, system_prompt, mode)
+        logger.info("LLM call success", extra={
+            "event": "llm_primary_ok", "model": "gemini",
             "user_id": user_id, "mode": mode,
         })
-
     except Exception as e:
-        # If primary failed due to rate-limiting, attempt fallback.
-        if _is_rate_limit_exc(e):
-            fallback_name, fallback_call = fallback_fn
-            logger.warning("Primary rate limited, switching to fallback", extra={
-                "event": "llm_fallback", "primary": primary_fn[0],
-                "fallback": fallback_name, "user_id": user_id,
-            })
-            try:
-                reply, tokens = fallback_call(messages, system_prompt, mode)
-                model_used = fallback_name
-            except Exception as e2:
-                logger.exception("Fallback also failed", extra={"event": "llm_both_failed"})
-                raise RuntimeError(f"Cả 2 model đều lỗi: {e2}")
-        else:
-            logger.exception("LLM call failed", extra={
-                "event": "llm_call_failed", "user_id": user_id, "error": str(e),
-            })
-            raise
+        logger.exception("Gemini call failed", extra={
+            "event": "llm_call_failed", "user_id": user_id, "mode": mode, "error": str(e),
+        })
+        reply = "⚠️ Hệ thống AI đang tạm thời quá tải hoặc gặp sự cố. Bạn vui lòng thử lại sau ít phút giúp mình nhé."
+        tokens = 0
+        model_used = None
 
     # Lọc ảo giác link job trước khi lưu và trả về
     if reply:
@@ -497,7 +456,7 @@ def chat_completion(
         "tokens": tokens, "duration_ms": elapsed, "mode": mode,
     })
 
-    # 4. Cộng token vào Redis
+    # 3. Cộng token vào MongoDB
     token_info = _add_tokens(user_id, tokens)
 
     warning_msg = None
