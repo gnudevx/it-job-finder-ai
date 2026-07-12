@@ -8,6 +8,7 @@ GET  /api/chat/tokens   → xem quota token hôm nay
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 import logging
 
 from core.dependencies import get_current_user, CurrentUser
@@ -29,6 +30,52 @@ from services.AI.intent_service import detect_intent, did_context_switch
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# ── Detect-intent nhanh (không gọi LLM sinh reply) ────────────────────────────
+# Mục đích: cho phép FE cập nhật UI (banner "đã chuyển sang chế độ X") NGAY khi
+# gửi tin nhắn, thay vì phải đợi cả câu trả lời đầy đủ từ Gemini rồi mới biết
+# mode đã đổi (vì trước đây detected_intent chỉ được trả về CÙNG LÚC với reply
+# trong 1 response duy nhất, mà bước sinh reply lại là bước chậm nhất).
+#
+# detect_intent() gần như luôn là rule-based (tức thì), chỉ hoạ hoằn lắm mới
+# rơi vào nhánh gọi Gemini classify (~50-80 token) khi rule-based không đủ tin
+# cậy — nên endpoint này vẫn nhanh hơn nhiều so với chờ full chat_completion.
+#
+# Cách dùng phía FE (gợi ý):
+#   1. User gõ xong, bấm gửi.
+#   2. FE gọi POST /api/chat/detect-intent NGAY (không đợi), nhận detected_intent
+#      → cập nhật banner/mode hiển thị ngay lập tức.
+#   3. Song song / ngay sau đó, FE gọi POST /api/chat/ (endpoint chính) để lấy
+#      reply thật — endpoint chính vẫn tự chạy lại detect_intent() một lần nữa
+#      để đảm bảo mode dùng khi build prompt/RAG luôn nhất quán với ngữ cảnh
+#      tại thời điểm xử lý, không phụ thuộc kết quả gọi tạm ở bước 2.
+class DetectIntentRequest(BaseModel):
+    message: str
+    mode: str
+
+
+class DetectIntentResponse(BaseModel):
+    detected_intent: str
+    switched: bool
+
+
+@router.post("/detect-intent", response_model=DetectIntentResponse)
+async def detect_intent_endpoint(
+    body: DetectIntentRequest,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Trả về intent ngay, KHÔNG gọi LLM sinh reply — để FE cập nhật UI tức thì."""
+    try:
+        detected_intent = detect_intent(body.message, body.mode)
+    except Exception as e:
+        logger.warning(f"Intent detection failed, using original mode: {e}")
+        detected_intent = body.mode
+
+    switched = did_context_switch(detected_intent, body.mode)
+    return DetectIntentResponse(detected_intent=detected_intent, switched=switched)
+
+
 @router.post("/", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
@@ -243,7 +290,11 @@ async def chat(
         # If we have a deterministic summary from DB, return it directly for count-like questions
         # to ensure authoritative numeric answers and avoid duplicated summaries.
 
-        if deterministic_summary and any(word in body.message.lower() for word in ["bao nhiêu", "số lượng", "how many", "count"]):
+        if (
+            detected_intent == "faq"
+            and deterministic_summary
+            and any(word in body.message.lower() for word in ["bao nhiêu", "số lượng", "how many", "count"])
+        ):
             try:
                 usage = get_token_usage(user.user_id)
             except Exception as e:
